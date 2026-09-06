@@ -19,6 +19,7 @@ from urllib.parse import urljoin
 
 from wasp.blackboard import Blackboard, Finding, severity_for_class
 from wasp.llm import OllamaClient, CompletionResponse
+from wasp.mitre import lookup as mitre_lookup
 from wasp.planner import Hypothesis
 from wasp.recon import ReconFacts
 from wasp.tools import run_tool, tools_for_class, run_http_request
@@ -234,6 +235,7 @@ def probe_hypothesis(
         verdict, detail = _evidence_confirm(hypothesis.vuln_class, raw_result, verdict, detail)
 
     if verdict == "CONFIRMED":
+        mitre = mitre_lookup(hypothesis.vuln_class)
         finding = Finding(
             vuln_class      = hypothesis.vuln_class,
             title           = _title_for(hypothesis.vuln_class, probe_url),
@@ -245,6 +247,10 @@ def probe_hypothesis(
             request_body    = str(tool_args.get("body", ""))[:500],
             request_headers = tool_args.get("headers", {}),
             description     = "",   # left blank — report phase writes accurate PoC
+            mitre_id        = mitre.technique_id,
+            mitre_technique = mitre.technique,
+            mitre_tactic    = mitre.tactic,
+            mitre_url       = mitre.url,
         )
         board.add_finding(finding)
         return finding

@@ -218,13 +218,17 @@ def render_markdown(
 
     # --- Summary table ---
     lines += ["## Summary", ""]
-    lines += ["| # | Severity | Title | URL |",
-              "|---|----------|-------|-----|"]
+    lines += ["| # | Severity | Title | URL | MITRE ATT&CK |",
+              "|---|----------|-------|-----|--------------|"]
     for i, f in enumerate(findings, 1):
         badge = _BADGE[f.severity]
         title = f.title.replace("|", "\\|")
         url   = f.target_url.replace("|", "\\|")
-        lines.append(f"| {i} | {badge} | {title} | `{url}` |")
+        if f.mitre_id:
+            mitre_cell = f"[{f.mitre_id}]({f.mitre_url}) {f.mitre_tactic}"
+        else:
+            mitre_cell = "—"
+        lines.append(f"| {i} | {badge} | {title} | `{url}` | {mitre_cell} |")
     lines.append("")
 
     # --- Individual findings ---
@@ -242,6 +246,13 @@ def render_markdown(
             f"**Discovered:** {f.timestamp.strftime('%H:%M:%S UTC')}",
             "",
         ]
+
+        if f.mitre_id:
+            lines += [
+                f"**MITRE ATT&CK:** [{f.mitre_id} — {f.mitre_technique}]({f.mitre_url})  ",
+                f"**Tactic:** {f.mitre_tactic}",
+                "",
+            ]
 
         if f.description:
             lines += ["**Description:**", "", f.description, ""]

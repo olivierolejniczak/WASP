@@ -92,6 +92,11 @@ class Finding:
     request_headers: dict = field(default_factory=dict)
     description: str = ""            # LLM-generated PoC paragraph (added in report phase)
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    # MITRE ATT&CK fields (populated automatically from mitre.py)
+    mitre_id: str = ""               # e.g. "T1190"
+    mitre_technique: str = ""        # e.g. "Exploit Public-Facing Application"
+    mitre_tactic: str = ""           # e.g. "Initial Access"
+    mitre_url: str = ""              # link to attack.mitre.org
 
     @property
     def id(self) -> str:
