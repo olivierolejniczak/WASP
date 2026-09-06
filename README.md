@@ -1,153 +1,247 @@
-# WASP — Web Application Security Pentest Swarm
+# WASP — Web Application Security Probe
 
-Patches and deployment configuration for running [Pentest-Swarm-AI](https://github.com/Armur-Ai/Pentest-Swarm-AI) **fully local, CPU-only** with [Ollama](https://ollama.com) and [OWASP Juice Shop](https://owasp.org/www-project-juice-shop/) as a built-in lab target.
-
----
-
-## What's in this repo
-
-Only the files we wrote. Drop them into a Pentest-Swarm-AI clone to apply the deployment.
-
-```
-cli/lab.go                   — patched lab runner (port 3002, reuse running container)
-internal/tools/nuclei.go     — patched nuclei adapter (CPU-safe, non-TTY fix)
-lab/docker-compose.yml       — OWASP Juice Shop on port 3002
-README.md                    — this file
-```
+> Lightweight local-AI penetration testing tool. Runs on modest hardware with a local Ollama model. Completes a meaningful scan of OWASP Juice Shop in under 15 minutes — no API keys, no cloud, no GPU required.
 
 ---
 
-## How to apply
+## What it does
+
+WASP runs a structured 4-phase scan:
+
+```
+Phase 1 — Recon    httpx + nmap + gobuster in parallel   ~75s   (zero LLM calls)
+Phase 2 — Plan     1 LLM call → 6 ordered hypotheses     ~3s
+Phase 3 — Probe    2-turn ReAct loop per hypothesis       ~5-8m
+Phase 4 — Report   1 LLM call per confirmed finding       ~15s
+```
+
+It finds vulnerabilities a local 3B model can reliably confirm in 1–2 steps:
+SQL injection, IDOR, path traversal, mass assignment, JWT alg:none, and security misconfigurations.
+
+It deliberately skips things small models fail at: multi-step UNION extraction, algorithm confusion, blind injection, and anything requiring a browser.
+
+---
+
+## Hardware requirements
+
+| Component | Minimum | This machine |
+|---|---|---|
+| CPU | Any x86-64 | i5-9500T (6 cores) |
+| RAM | 4 GB | 16 GB |
+| Disk | 3 GB (model) | NVMe |
+| GPU | Not required | Not used |
+| Ollama | v0.3+ | Port 11435 |
+
+---
+
+## Quick start
 
 ```bash
-git clone https://github.com/Armur-Ai/Pentest-Swarm-AI.git
-cd Pentest-Swarm-AI
+# 1. Install Python deps
+cd /home/dietpi/wasp
+pip install -r requirements.txt
 
-# Drop in our patches
-cp /path/to/WASP/cli/lab.go cli/lab.go
-cp /path/to/WASP/internal/tools/nuclei.go internal/tools/nuclei.go
+# 2. Verify setup
+python wasp.py doctor
 
-make build
-sudo cp bin/pentestswarm /usr/local/bin/
+# 3. Start Juice Shop
+docker run -d -p 3002:3000 bkimminich/juice-shop
+
+# 4. Run a scan
+python wasp.py scan http://localhost:3002
+
+# 5. View the report
+cat wasp-*.md
 ```
 
 ---
 
-## Infrastructure setup
+## Commands
 
-### Ollama (CPU-only)
+### `scan`
+```
+python wasp.py scan <TARGET> [OPTIONS]
 
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-
-# If port 11434 is taken, move Ollama to 11435
-mkdir -p /etc/systemd/system/ollama.service.d/
-echo -e '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11435"' \
-  > /etc/systemd/system/ollama.service.d/override.conf
-systemctl daemon-reload && systemctl restart ollama
-
-ollama pull llama3.2:3b
+Options:
+  -c, --config PATH     Config file (default: config.yaml)
+  -m, --model TEXT      Override Ollama model for this run
+  -b, --budget INT      Wall-clock budget in minutes (default: 14)
+  -o, --output DIR      Directory for the report file (default: .)
+  -v, --verbose         Show tool output and rationale in real time
+  --dry-run             Plan and recon only — no probes executed
 ```
 
-### PostgreSQL + Redis
-
+Examples:
 ```bash
-apt-get install -y postgresql redis-server
-systemctl enable --now postgresql redis-server
+# Basic scan
+python wasp.py scan http://localhost:3002
 
-sudo -u postgres psql -c "CREATE USER pentestswarm WITH PASSWORD 'pentestswarm';"
-sudo -u postgres psql -c "CREATE DATABASE pentestswarm OWNER pentestswarm;"
+# Better model (pull first: ollama pull qwen3:1.7b)
+python wasp.py scan http://localhost:3002 --model qwen3:1.7b
+
+# Tight 8-minute budget
+python wasp.py scan http://localhost:3002 --budget 8
+
+# See what it planned without running probes
+python wasp.py scan http://localhost:3002 --dry-run --verbose
 ```
 
-### OWASP Juice Shop
-
+### `doctor`
+Check Ollama connectivity, installed tool binaries, and Python dependencies.
 ```bash
-cd lab/
-docker compose up -d
-# Juice Shop available at http://localhost:3002
+python wasp.py doctor
 ```
 
-### Security toolchain
-
+### `models`
+List Ollama models available on this machine with tool-calling capability flags.
 ```bash
-# ProjectDiscovery tools
-go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-go install github.com/projectdiscovery/katana/cmd/katana@latest
-go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-go install github.com/lc/gau/v2/cmd/gau@latest
-go install github.com/ffuf/ffuf/v2@latest
-go install github.com/sensepost/gowitness@latest
-go install github.com/owasp-amass/amass/v4/...@latest
-go install github.com/zricethezav/gitleaks/v8@latest
-
-apt-get install -y nmap sqlmap gobuster
-pip install semgrep --break-system-packages
-curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
-  | sh -s -- -b /usr/local/bin
+python wasp.py models
 ```
 
-### config.yaml
+---
+
+## Model recommendations
+
+| Model | Agent Score | Speed (CPU) | Notes |
+|---|---|---|---|
+| `llama3.2:3b` | 0.66 | ~1.7s/call | Already installed. Works well with WASP's 2-turn harness. |
+| `qwen3:1.7b` | 0.96 | ~10s/call | Best judgment of any sub-4B model. Recommended upgrade. |
+| `qwen2.5:1.5b` | 0.80 | ~2.2s/call | Good balance. `ollama pull qwen2.5:1.5b` |
+
+Scores from [MikeVeerman local tool-calling benchmark 2026](https://github.com/MikeVeerman/tool-calling-benchmark).
+
+To use a different model:
+```bash
+ollama pull qwen3:1.7b
+python wasp.py scan http://localhost:3002 --model qwen3:1.7b
+# or set model in config.yaml
+```
+
+---
+
+## Configuration
+
+Edit `config.yaml`. Key settings:
 
 ```yaml
 orchestrator:
-  provider: "ollama"
-  model: "llama3.2:3b"
+  model:    "llama3.2:3b"       # local model
   endpoint: "http://localhost:11435"
-  context_window: 8192
-  max_tokens: 4096
-  temperature: 0.1
 
-database:
-  host: "localhost"
-  port: 5432
-  user: "pentestswarm"
-  password: "pentestswarm"
-  name: "pentestswarm"
-  sslmode: "disable"
+lite:
+  wall_clock_budget_s: 840      # 14 minutes
+  max_hypotheses:      6        # attack hypotheses to test
+  tool_timeout_s:      45       # per-tool timeout
 
-redis:
-  host: "localhost"
-  port: 6379
-  db: 0
+tools:
+  sqlmap:
+    technique: "B"              # boolean-only — fastest
+  nuclei:
+    severity: ["critical", "high"]
+    rate_limit: 10
 ```
 
 ---
 
-## Run the lab
+## Installed tools (optional but recommended)
 
-```bash
-pentestswarm scan --lab --provider ollama --follow
+WASP works with only Python installed. External tools improve coverage:
+
+| Tool | Used for | Install |
+|---|---|---|
+| `nmap` | Port scan | `apt-get install nmap` |
+| `gobuster` | Endpoint discovery | `apt-get install gobuster` |
+| `httpx` | HTTP fingerprinting | `go install github.com/projectdiscovery/httpx/cmd/httpx@latest` |
+| `sqlmap` | SQL injection | `apt-get install sqlmap` |
+| `nikto` | Misconfig scan | `apt-get install nikto` |
+| `nuclei` | Template scanning | https://nuclei.projectdiscovery.io |
+
+Without external tools, WASP falls back to pure-Python HTTP probing for recon and uses only `http_request` and `jwt_lite` for probes.
+
+---
+
+## Expected output against Juice Shop
+
+```
+── WASP — Web Application Security Probe ──────────────────────────
+  Target  : http://localhost:3002
+  Model   : llama3.2:3b  @ http://localhost:11435
+  Budget  : 14m 0s
+
+✓ Ollama reachable — model llama3.2:3b
+
+── Phase 1 — Recon ─────────────────────────────────────────────────
+✓ Recon complete in 68.4s
+  Ports     : 3002
+  Tech      : Express
+  Endpoints : 34 discovered
+  Login     : /rest/user/login
+
+── Phase 2 — Planning ───────────────────────────────────────────────
+✓ 6 hypotheses generated
+  [1] sqli          → /rest/user/login
+  [2] idor          → /rest/basket/1
+  [3] lfi           → /ftp
+  [4] mass_assignment → /api/Users
+  [5] jwt_attack    → /rest/user/login
+  [6] security_misconfig → /
+
+── Phase 3 — Probing ────────────────────────────────────────────────
+  CONFIRMED CRITICAL  SQL Injection — /rest/user/login          (8.2s)
+  CONFIRMED HIGH      IDOR — /rest/basket/1                     (4.1s)
+  CONFIRMED MEDIUM    Local File Inclusion / Directory Listing   (3.8s)
+  CONFIRMED HIGH      Mass Assignment — /api/Users              (5.3s)
+  not vulnerable      jwt_attack → /rest/user/login             (6.1s)
+  CONFIRMED LOW       Security Misconfiguration — /             (62.4s)
+
+── Phase 4 — Report ─────────────────────────────────────────────────
+✓ Report written → wasp-20260904-120532-localhost-3002.md
+
+── Results ──────────────────────────────────────────────────────────
+  Hypotheses tested : 6
+  Findings          : 5
+
+  Sev       Title                                      URL
+  ────────────────────────────────────────────────────────────────────
+  CRITICAL  SQL Injection — /rest/user/login           http://...
+  HIGH      IDOR — /rest/basket/1                      http://...
+  HIGH      Mass Assignment — /api/Users               http://...
+  MEDIUM    Local File Inclusion / Directory Listing   http://...
+  LOW       Security Misconfiguration — /              http://...
+
+  Total time : 7m 42s
 ```
 
-The `--lab` flag detects the running Juice Shop on port 3002 and points the swarm at it automatically. No API key needed.
-
 ---
 
-## What the patches fix
+## Architecture
 
-**`cli/lab.go`**
-- Port changed 3000 → 3002 (3000 was occupied on this host)
-- Added fast-path: detects an already-running Juice Shop and reuses it instead of spinning a new container every run
-
-**`internal/tools/nuclei.go`**
-- Fixes nuclei v3 hanging indefinitely in non-TTY contexts — it was blocking on an interactive cloud-auth prompt
-- Switches from full template tree (triggers the hang) to focused subdirs: `exposures/`, `misconfiguration/`, `technologies/`, `vulnerabilities/`, `takeovers/`
-- Adds `-duc` (disable update check), `-no-interactsh`, `-rl 30 -c 5` for CPU-only hosts
-
----
-
-## Check system health
-
-```bash
-pentestswarm doctor
-# Expected: 7/8 infra (API server is optional dashboard), 16/16 tools
+```
+wasp.py          CLI (typer + rich)
+├── recon.py     Phase 1 — parallel httpx + nmap + gobuster, returns ReconFacts
+├── planner.py   Phase 2 — 1 LLM call → list[Hypothesis]
+├── probe.py     Phase 3 — 2-turn ReAct loop per hypothesis → Finding | None
+├── report.py    Phase 4 — LLM PoC enrichment + Markdown render
+├── blackboard.py  In-memory Finding store (thread-safe)
+├── llm.py       Ollama client — native tool_calls + JSON fallback parser
+└── tools.py     8 tool wrappers + CLASS_TOOLS mapping + run_tool() dispatcher
 ```
 
 ---
 
-## Legal
+## Inspiration
 
-For authorized testing only. OWASP Juice Shop is an intentionally vulnerable app — safe and legal to scan locally.
+WASP stands on the shoulders of:
+- **[Pentest-Swarm-AI](https://github.com/Armur-Ai/Pentest-Swarm-AI)** — parent project; stigmergic swarm architecture
+- **[HackingBuddyGPT](https://github.com/ipa-lab/hackingBuddyGPT)** — minimal LLM+tool loop philosophy
+- **[PentestGPT](https://github.com/GreyDGL/PentestGPT)** — three-module reasoning pattern
+- **[CAI](https://github.com/aliasrobotics/cai)** — parallel tool execution before LLM reasoning
+- **[TrustedSec Juice Shop Benchmark](https://trustedsec.com/blog/benchmarking-self-hosted-llms-for-offensive-security)** — empirical data on what local models can and cannot do
+
+---
+
+## Disclaimer
+
+Only use WASP against systems you own or are explicitly authorized to test.
+This tool executes real HTTP requests, port scans, and fuzzing payloads.
+Findings are produced by a local LLM and should be manually verified.

@@ -1,2 +1,5 @@
-config.yaml
-*.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+wasp-*.md
