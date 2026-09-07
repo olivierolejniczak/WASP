@@ -920,6 +920,32 @@ info "Installing impacket (AD attack tools)…"
     warn "impacket install failed — AD/Kerberos features limited"
 
 # ---------------------------------------------------------------------------
+# crackmapexec / netexec — network/AD scan support (wasp doctor checks for
+# the binary name 'crackmapexec', but the project renamed to netexec and
+# is no longer on PyPI — install netexec via pipx from git, then symlink)
+# ---------------------------------------------------------------------------
+if [ "$OFFLINE" = "no" ] && ! command -v crackmapexec >/dev/null 2>&1; then
+    section "crackmapexec (netexec) — AD/network scan support"
+    install_package pipx
+    install_package build-tools
+    if [ "$PKG_MGR" = "apt" ]; then
+        pkg_install apt rustc cargo
+    fi
+    REAL_HOME="${HOME:-/root}"
+    if command -v pipx >/dev/null 2>&1; then
+        pipx install --quiet "git+https://github.com/Pennyw0rth/NetExec" 2>/dev/null && \
+            success "netexec installed via pipx" || \
+            warn "netexec install failed — crackmapexec/AD features unavailable"
+        if [ -x "${REAL_HOME}/.local/bin/nxc" ]; then
+            ln -sf "${REAL_HOME}/.local/bin/nxc" /usr/local/bin/crackmapexec
+            success "crackmapexec → nxc symlinked"
+        fi
+    else
+        warn "pipx not available — skipping netexec install"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Write config.yaml — tuned to this hardware
 # ---------------------------------------------------------------------------
 section "Writing config.yaml"
