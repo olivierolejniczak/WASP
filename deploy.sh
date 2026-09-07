@@ -779,7 +779,8 @@ if [ "$INSTALL_PD_TOOLS" = "yes" ] && [ "$OFFLINE" = "no" ] && \
     section "ProjectDiscovery tools (httpx + nuclei)"
 
     install_pd_tool() {
-        local tool="$1" repo="$2" dest="/usr/local/bin/${tool}"
+        local tool="$1" repo="$2"
+        local dest="/usr/local/bin/${tool}"
         if command -v "$tool" >/dev/null 2>&1; then
             success "$tool already installed"
             return 0
