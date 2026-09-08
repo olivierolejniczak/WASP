@@ -328,21 +328,22 @@ def _render_network_report(
 
     # All findings consolidated
     all_findings = [f for r in results for f in r.findings]
-    if all_findings and exploit:
-        # Only enrich findings — skip if llm is slow (best-effort)
-        try:
-            original_max = llm.max_tokens
-            llm.max_tokens = max(llm.max_tokens, 400)
-            import signal as _sig
-            def _timeout_handler(signum, frame):
-                raise TimeoutError("enrichment timed out")
-            _sig.signal(_sig.SIGALRM, _timeout_handler)
-            _sig.alarm(120)   # 2-minute hard limit on enrichment
-            enrich_findings(all_findings, llm, config)
-            _sig.alarm(0)
-            llm.max_tokens = original_max
-        except Exception:
-            pass  # enrichment is best-effort; raw evidence still in report
+    if all_findings:
+        if exploit:
+            # Only enrich findings — skip if llm is slow (best-effort)
+            try:
+                original_max = llm.max_tokens
+                llm.max_tokens = max(llm.max_tokens, 400)
+                import signal as _sig
+                def _timeout_handler(signum, frame):
+                    raise TimeoutError("enrichment timed out")
+                _sig.signal(_sig.SIGALRM, _timeout_handler)
+                _sig.alarm(120)   # 2-minute hard limit on enrichment
+                enrich_findings(all_findings, llm, config)
+                _sig.alarm(0)
+                llm.max_tokens = original_max
+            except Exception:
+                pass  # enrichment is best-effort; raw evidence still in report
 
         lines += ["## All Findings", ""]
         from wasp.blackboard import Severity
