@@ -209,6 +209,12 @@ def probe_hypothesis(
     raw_result = run_tool(tool_name, tool_args, config, timeout=int(tool_timeout))
     truncated  = raw_result[:result_limit]
 
+    # Generic framework errors (bad route, malformed request) are never
+    # evidence of a vulnerability — skip turn 2 so a small model can't
+    # hallucinate CONFIRMED off a 404/parse error it doesn't recognise.
+    if _is_generic_error(raw_result):
+        return None
+
     # --- Turn 2: LLM classifies the result ---
     request_summary = _summarise_request(tool_name, tool_args)
 
@@ -261,6 +267,25 @@ def probe_hypothesis(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _is_generic_error(raw_result: str) -> bool:
+    """
+    True if the tool response is a generic framework/routing error rather
+    than evidence relevant to any vulnerability class (e.g. an Express
+    "Unexpected path" 404 or a JSON parse error from a malformed request).
+    """
+    r = raw_result.lower()
+    markers = (
+        "unexpected path:",
+        "cannot get ", "cannot post ", "cannot put ", "cannot delete ",
+        "syntaxerror: expected property name",
+        "syntaxerror: unexpected token",
+        "syntaxerror: unexpected end of json input",
+        "no authorization header was found",
+        "jwt malformed", "jsonwebtokenerror",
+    )
+    return any(m in r for m in markers)
+
 
 def _parse_verdict(text: str) -> tuple[str, str]:
     """
