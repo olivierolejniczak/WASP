@@ -15,6 +15,7 @@ import time
 import subprocess
 import shutil
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -191,12 +192,15 @@ def run_network_scan(
     discovery_timeout: int = 30,
     exploit: bool = False,
     credential_spray: bool = False,
+    max_workers: int = 8,
 ) -> tuple[list[HostResult], str]:
     """
     Full pipeline:
       1. Discover live hosts
       2. Classify each host by service fingerprint
-      3. Scan each host sequentially (budget-gated)
+      3. Scan hosts in parallel (budget-gated per host), --credential-spray
+         forces sequential since a host's known_creds depend on what earlier
+         hosts confirmed
       4. Render combined report
 
     Returns (results, report_path).
@@ -233,38 +237,54 @@ def run_network_scan(
         progress(f"  {info.host:<18} → {info.target_type:<12} ports=[{ports_str}]")
 
     # Step 3: scan each host
-    all_results: list[HostResult] = []
+    n_hosts = len(classified)
+    all_results: list[HostResult | None] = [None] * n_hosts
     known_creds: list[str] = []
-    for i, info in enumerate(classified, 1):
+
+    def _report_result(i: int, hr: HostResult) -> None:
+        n = len(hr.findings)
+        elapsed = f"{hr.elapsed_s:.0f}s"
+        label = f"[{i+1}/{n_hosts}] {hr.info.host} ({hr.info.target_type})"
+        if hr.error:
+            progress(f"{label}  ✗ error: {hr.error[:80]}")
+        elif n:
+            sevs = ", ".join(f.severity.value for f in hr.findings)
+            progress(f"{label}  ✓ {n} finding(s) [{sevs}] in {elapsed}")
+        else:
+            progress(f"{label}  – no findings in {elapsed}")
+
+    scannable: list[tuple[int, TargetInfo]] = []
+    for i, info in enumerate(classified):
         if info.target_type in ("iot", "unknown") and not info.open_ports:
-            progress(f"[{i}/{len(classified)}] {info.host} — skipping (no open ports)")
-            hr = HostResult(info=info)
-            all_results.append(hr)
-            continue
+            progress(f"[{i+1}/{n_hosts}] {info.host} — skipping (no open ports)")
+            all_results[i] = HostResult(info=info)
+        else:
+            scannable.append((i, info))
 
-        progress(f"[{i}/{len(classified)}] Scanning {info.host} ({info.target_type}) …")
-        hr = scan_host(
-            info, llm, config, host_budget_s=host_budget_s,
-            known_creds=known_creds if credential_spray else None,
-        )
-        all_results.append(hr)
-
-        if credential_spray:
+    if credential_spray:
+        # Sequential: each host's known_creds depend on what earlier hosts confirmed.
+        for i, info in scannable:
+            progress(f"[{i+1}/{n_hosts}] Scanning {info.host} ({info.target_type}) …")
+            hr = scan_host(info, llm, config, host_budget_s=host_budget_s, known_creds=known_creds)
+            all_results[i] = hr
             for f in hr.findings:
                 if f.vuln_class == "default_creds":
                     for cred in _extract_creds(f.evidence):
                         if cred not in known_creds:
                             known_creds.append(cred)
-
-        n = len(hr.findings)
-        elapsed = f"{hr.elapsed_s:.0f}s"
-        if hr.error:
-            progress(f"  ✗ error: {hr.error[:80]}")
-        elif n:
-            sevs = ", ".join(f.severity.value for f in hr.findings)
-            progress(f"  ✓ {n} finding(s) [{sevs}] in {elapsed}")
-        else:
-            progress(f"  – no findings in {elapsed}")
+            _report_result(i, hr)
+    else:
+        progress(f"Scanning {len(scannable)} host(s) in parallel (max {max_workers} at a time) …")
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(scannable)))) as pool:
+            futures = {
+                pool.submit(scan_host, info, llm, config, host_budget_s=host_budget_s): i
+                for i, info in scannable
+            }
+            for fut in as_completed(futures):
+                i = futures[fut]
+                hr = fut.result()
+                all_results[i] = hr
+                _report_result(i, hr)
 
     # Step 4: report — write file first (even without enrichment), then enrich if time allows
     total_findings = sum(len(r.findings) for r in all_results)
@@ -402,3 +422,32 @@ def _render_network_report(
     path = os.path.join(output_dir, f"wasp-network-{ts}-{slug}.md")
     Path(path).write_text(md, encoding="utf-8")
     return path
+
+
+def _self_check():
+    """Parallel scan must return results in classified (input) order, not
+    completion order, since results/reports index hosts positionally."""
+    import random
+    import wasp.network_scan as ns
+
+    fake_hosts = [f"10.0.0.{i}" for i in range(10)]
+    fake_infos = [TargetInfo(raw=h, host=h, port=None, scheme="", target_type="linux", open_ports=[22]) for h in fake_hosts]
+
+    def fake_scan_host(info, llm, config, host_budget_s=120, known_creds=None):
+        time.sleep(random.uniform(0, 0.03))  # simulate out-of-order completion
+        return HostResult(info=info, elapsed_s=0.1)
+
+    orig_discover, orig_classify, orig_scan_host = ns.discover_hosts, ns.quick_classify_hosts, ns.scan_host
+    ns.discover_hosts       = lambda cidr, timeout=30: fake_hosts
+    ns.quick_classify_hosts = lambda hosts, timeout=45: fake_infos
+    ns.scan_host            = fake_scan_host
+    try:
+        results, _ = ns.run_network_scan("10.0.0.0/24", llm=None, config={}, output_dir="/tmp")
+        assert [r.info.host for r in results] == fake_hosts
+    finally:
+        ns.discover_hosts, ns.quick_classify_hosts, ns.scan_host = orig_discover, orig_classify, orig_scan_host
+
+
+if __name__ == "__main__":
+    _self_check()
+    print("ok")
