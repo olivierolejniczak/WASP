@@ -455,10 +455,23 @@ def _evidence_confirm(vuln_class: str, raw_result: str, verdict: str, detail: st
 
     signals = _SIGNALS.get(vuln_class.lower(), [])
     for sig in signals:
-        if sig in r:
+        # "vulnerable" is a substring of nmap's own "NOT VULNERABLE" state
+        # line — skip a match sitting right after a "not " negation.
+        if sig in r and f"not {sig}" not in r:
             return "CONFIRMED", f"Evidence detected in response: '{sig}' pattern found"
 
     return verdict, detail
+
+
+def _self_check():
+    assert _evidence_confirm("smb_vuln", "Host script results:\n  State: NOT VULNERABLE", "NOT_VULNERABLE", "") == ("NOT_VULNERABLE", "")
+    assert _evidence_confirm("smb_vuln", "Host script results:\n  State: VULNERABLE", "NOT_VULNERABLE", "")[0] == "CONFIRMED"
+    assert _evidence_confirm("rdp_vuln", "likely not vulnerable", "NOT_VULNERABLE", "") == ("NOT_VULNERABLE", "")
+
+
+if __name__ == "__main__":
+    _self_check()
+    print("ok")
 
 
 def _summarise_request(tool_name: str, args: dict) -> str:
