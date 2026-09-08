@@ -313,6 +313,14 @@ def probe_hypothesis(
     if verdict == "NOT_VULNERABLE":
         verdict, detail = _evidence_confirm(hypothesis.vuln_class, raw_result, verdict, detail)
 
+    # Classes whose whole verdict rests on a deterministic nmap NSE script
+    # result give the model no ambiguous prose to reason about — an empty
+    # or silent script run is not evidence, so CONFIRMED without a matching
+    # signal is a hallucination, not a hedge. Downgrade it.
+    if verdict == "CONFIRMED" and hypothesis.vuln_class in _SCRIPT_VERDICT_CLASSES:
+        if not _has_signal(hypothesis.vuln_class, raw_result):
+            verdict, detail = "NOT_VULNERABLE", ""
+
     if verdict == "CONFIRMED":
         mitre = mitre_lookup(hypothesis.vuln_class)
         finding = Finding(
@@ -409,64 +417,86 @@ def _parse_verdict(text: str) -> tuple[str, str]:
     return "NOT_VULNERABLE", clean[:300]
 
 
+# Substrings whose presence in raw tool output is unmistakable evidence of
+# exploitation for a given vuln class. Used both to upgrade a hedged
+# NOT_VULNERABLE verdict and to reject an unwarranted CONFIRMED one.
+_SIGNALS: dict[str, list[str]] = {
+    # Web
+    "sqli":            ["\"token\":\"eyj", "authentication", "\"role\":\"admin\"", "umail"],
+    "auth_bypass":     ["\"token\":\"eyj", "authentication", "logged in"],
+    "jwt_attack":      ["\"email\":", "admin@", "customer@"],
+    "idor":            ["\"products\":", "basketitem", "\"userid\""],
+    "mass_assignment": ["\"role\":\"admin\"", "\"role\": \"admin\""],
+    "lfi":             ["acquisitions", "eastere", "confidential", "this document"],
+    "path_traversal":  ["acquisitions", "eastere", "confidential", "root:x:"],
+    "security_misconfig": ["osvdb", "server leaks", "x-frame-options", "nikto"],
+    "outdated_components": ["cve-", "[critical]", "[high]"],
+    "xss_reflected":   ["<script", "alert(", "onerror="],
+    "info_disclosure": ["password", "secret", "api_key", "private"],
+    # Windows / SMB
+    "smb_enum":        ["sharename", "workgroup", "domain", "netbios", "os:", "smb2"],
+    "smb_vuln":        ["state: vulnerable", "ms17-010", "ms08-067", "eternalblue"],
+    "smb_signing":     ["signing enabled but not required", "message_signing: disabled"],
+    "null_session":    ["sharename", "ipc$", "netlogon", "sysvol"],
+    "anonymous_smb":   ["sharename", "ipc$", "anonymous"],
+    "rdp_info":        ["rdp", "ntlm", "domain:", "computer name", "rdp-ntlm-info"],
+    "rdp_vuln":        ["state: vulnerable", "ms12-020"],
+    "default_creds":   ["login:", "1 valid password", "host:", "[success]", "successfully authenticated"],
+    # Active Directory
+    "ad_enum":         ["namingcontexts", "defaultnamingcontext", "dnsroot", "ldap"],
+    "asreproast":      ["$krb5asrep$", "as-rep", "hash"],
+    "kerberoast":      ["$krb5tgs$", "spn", "service ticket"],
+    "ad_null_bind":    ["namingcontexts", "defaultnamingcontext", "success"],
+    # Linux services
+    "ssh_audit":       ["ssh-", "ecdsa", "rsa", "ed25519", "ssh_host"],
+    "ftp_anon":        ["anonymous ftp login allowed", "230", "ftp-anon"],
+    "snmp_enum":       ["sysname", "sysdescr", "sysuptime", "enterprises"],
+    "smtp_enum":       ["220", "ehlo", "vrfy", "expn", "smtp"],
+    "db_enum":         ["version:", "mysql", "mssql", "postgres", "database:"],
+    "banner_info":     ["ssh-", "ftp", "smtp", "220", "230", "http/", "server:"],
+}
+
+
 def _evidence_confirm(vuln_class: str, raw_result: str, verdict: str, detail: str) -> tuple[str, str]:
     """
     Scan the raw tool output for unmistakable evidence of exploitation.
     Overrides a NOT_VULNERABLE LLM verdict when evidence is clear.
     This compensates for small models that under-call on turn 2.
     """
-    r = raw_result.lower()
-
-    _SIGNALS: dict[str, list[str]] = {
-        # Web
-        "sqli":            ["\"token\":\"eyj", "authentication", "\"role\":\"admin\"", "umail"],
-        "auth_bypass":     ["\"token\":\"eyj", "authentication", "logged in"],
-        "jwt_attack":      ["\"email\":", "admin@", "customer@"],
-        "idor":            ["\"products\":", "basketitem", "\"userid\""],
-        "mass_assignment": ["\"role\":\"admin\"", "\"role\": \"admin\""],
-        "lfi":             ["acquisitions", "eastere", "confidential", "this document"],
-        "path_traversal":  ["acquisitions", "eastere", "confidential", "root:x:"],
-        "security_misconfig": ["osvdb", "server leaks", "x-frame-options", "nikto"],
-        "outdated_components": ["cve-", "[critical]", "[high]"],
-        "xss_reflected":   ["<script", "alert(", "onerror="],
-        "info_disclosure": ["password", "secret", "api_key", "private"],
-        # Windows / SMB
-        "smb_enum":        ["sharename", "workgroup", "domain", "netbios", "os:", "smb2"],
-        "smb_vuln":        ["vulnerable", "state: vulnerable", "ms17-010", "ms08-067", "eternalblue"],
-        "smb_signing":     ["signing enabled but not required", "message_signing: disabled"],
-        "null_session":    ["sharename", "ipc$", "netlogon", "sysvol"],
-        "anonymous_smb":   ["sharename", "ipc$", "anonymous"],
-        "rdp_info":        ["rdp", "ntlm", "domain:", "computer name", "rdp-ntlm-info"],
-        "rdp_vuln":        ["vulnerable", "ms12-020", "state: vulnerable"],
-        "default_creds":   ["login:", "1 valid password", "host:", "[success]", "successfully authenticated"],
-        # Active Directory
-        "ad_enum":         ["namingcontexts", "defaultnamingcontext", "dnsroot", "ldap"],
-        "asreproast":      ["$krb5asrep$", "as-rep", "hash"],
-        "kerberoast":      ["$krb5tgs$", "spn", "service ticket"],
-        "ad_null_bind":    ["namingcontexts", "defaultnamingcontext", "success"],
-        # Linux services
-        "ssh_audit":       ["ssh-", "ecdsa", "rsa", "ed25519", "ssh_host"],
-        "ftp_anon":        ["anonymous ftp login allowed", "230", "ftp-anon"],
-        "snmp_enum":       ["sysname", "sysdescr", "sysuptime", "enterprises"],
-        "smtp_enum":       ["220", "ehlo", "vrfy", "expn", "smtp"],
-        "db_enum":         ["version:", "mysql", "mssql", "postgres", "database:"],
-        "banner_info":     ["ssh-", "ftp", "smtp", "220", "230", "http/", "server:"],
-    }
-
-    signals = _SIGNALS.get(vuln_class.lower(), [])
-    for sig in signals:
-        # "vulnerable" is a substring of nmap's own "NOT VULNERABLE" state
-        # line — skip a match sitting right after a "not " negation.
-        if sig in r and f"not {sig}" not in r:
-            return "CONFIRMED", f"Evidence detected in response: '{sig}' pattern found"
+    sig = _matching_signal(vuln_class, raw_result.lower())
+    if sig:
+        return "CONFIRMED", f"Evidence detected in response: '{sig}' pattern found"
 
     return verdict, detail
+
+
+def _matching_signal(vuln_class: str, lowered_result: str) -> str:
+    """Return the first _SIGNALS entry found in lowered_result, else ''."""
+    for sig in _SIGNALS.get(vuln_class.lower(), []):
+        # "vulnerable" is a substring of nmap's own "NOT VULNERABLE" state
+        # line — skip a match sitting right after a "not " negation.
+        if sig in lowered_result and f"not {sig}" not in lowered_result:
+            return sig
+    return ""
+
+
+def _has_signal(vuln_class: str, raw_result: str) -> bool:
+    return bool(_matching_signal(vuln_class, raw_result.lower()))
+
+
+# Vuln classes whose evidence is a deterministic nmap NSE script verdict
+# (e.g. smb-vuln-ms17-010's "State: VULNERABLE" line) rather than something
+# an LLM needs to interpret from prose — a CONFIRMED verdict here must be
+# backed by a real _SIGNALS match or it's a guess, not a finding.
+_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln"}
 
 
 def _self_check():
     assert _evidence_confirm("smb_vuln", "Host script results:\n  State: NOT VULNERABLE", "NOT_VULNERABLE", "") == ("NOT_VULNERABLE", "")
     assert _evidence_confirm("smb_vuln", "Host script results:\n  State: VULNERABLE", "NOT_VULNERABLE", "")[0] == "CONFIRMED"
     assert _evidence_confirm("rdp_vuln", "likely not vulnerable", "NOT_VULNERABLE", "") == ("NOT_VULNERABLE", "")
+    assert _has_signal("smb_vuln", "PORT 445/tcp open microsoft-ds") is False
+    assert _has_signal("smb_vuln", "State: VULNERABLE") is True
 
 
 if __name__ == "__main__":
