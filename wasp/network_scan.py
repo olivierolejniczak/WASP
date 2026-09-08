@@ -421,6 +421,20 @@ def _render_network_report(
     ts   = scan_start.strftime("%Y%m%d-%H%M%S")
     path = os.path.join(output_dir, f"wasp-network-{ts}-{slug}.md")
     Path(path).write_text(md, encoding="utf-8")
+
+    import json as _json
+    report_dict = {
+        "cidr": cidr,
+        "scan_start": scan_start.isoformat(),
+        "elapsed_s": elapsed_s,
+        "hosts": [
+            {"host": r.info.host, "type": r.info.target_type, "open_ports": r.info.open_ports,
+             "findings": [f.to_dict() for f in r.findings]}
+            for r in results
+        ],
+    }
+    Path(path[:-3] + ".json").write_text(_json.dumps(report_dict, indent=2), encoding="utf-8")
+
     return path
 
 

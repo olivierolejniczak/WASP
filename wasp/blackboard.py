@@ -11,7 +11,7 @@ scan this is all the persistence we need.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Iterator
@@ -104,6 +104,13 @@ class Finding:
         """Stable ID used for deduplication."""
         return f"{self.vuln_class}:{self.target_url}"
 
+    def to_dict(self) -> dict:
+        """JSON-safe representation (Severity -> str, datetime -> ISO)."""
+        d = asdict(self)
+        d["severity"]  = self.severity.value
+        d["timestamp"] = self.timestamp.isoformat()
+        return d
+
 
 # ---------------------------------------------------------------------------
 # Blackboard
@@ -180,3 +187,18 @@ class Blackboard:
             "by_severity": by_sev,
             "hypotheses_tested": self.tested_count(),
         }
+
+
+def _self_check():
+    import json
+    f = Finding(vuln_class="sqli", title="t", severity=Severity.HIGH,
+                target_url="http://x", evidence="ev", cvss=9.8)
+    d = json.loads(json.dumps(f.to_dict()))
+    assert d["severity"] == "high"
+    assert isinstance(d["timestamp"], str)
+    assert d["cvss"] == 9.8
+
+
+if __name__ == "__main__":
+    _self_check()
+    print("ok")

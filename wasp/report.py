@@ -341,6 +341,16 @@ def write_report(
     out_path = os.path.join(output_dir, filename)
 
     Path(out_path).write_text(md, encoding="utf-8")
+
+    report_dict = {
+        "target": target_url,
+        "scan_start": scan_start.isoformat(),
+        "elapsed_s": elapsed_s,
+        "findings": [f.to_dict() for f in findings],
+    }
+    json_path = out_path[:-3] + ".json"
+    Path(json_path).write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
+
     return out_path
 
 
