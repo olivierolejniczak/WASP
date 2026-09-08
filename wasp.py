@@ -147,6 +147,7 @@ def scan(
     verbose:     bool           = typer.Option(False,   "--verbose","-v", help="Show tool output in real time"),
     dry_run:     bool           = typer.Option(False,   "--dry-run",      help="Plan only — do not execute any probes"),
     force_type:  Optional[str]  = typer.Option(None,    "--type",   "-t", help="Force target type: web/windows/activedir/linux/router/database"),
+    exploit:     bool           = typer.Option(False,   "--exploit",      help="Generate PoC curl commands / exploitation narrative in the report (explicit opt-in, requires client authorization)"),
 ):
     """Run a WASP security scan against TARGET (URL, IP, hostname, or CIDR)."""
 
@@ -161,6 +162,7 @@ def scan(
             budget=budget,
             output_dir=output_dir,
             verbose=verbose,
+            exploit=exploit,
         )
         return
 
@@ -240,7 +242,7 @@ def scan(
     console.print()
 
     if _cancelled.is_set():
-        _finish(board, target, scan_start, elapsed(), llm, config, output_dir)
+        _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit)
         return
 
     # ── Phase 2: Plan ─────────────────────────────────────────────────────
@@ -260,7 +262,7 @@ def scan(
         raise typer.Exit(0)
 
     if _cancelled.is_set():
-        _finish(board, target, scan_start, elapsed(), llm, config, output_dir)
+        _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit)
         return
 
     # ── Phase 3: Probe ────────────────────────────────────────────────────
@@ -294,7 +296,7 @@ def scan(
             )
 
     console.print()
-    _finish(board, target, scan_start, elapsed(), llm, config, output_dir)
+    _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit)
 
 
 def _finish(
@@ -305,6 +307,7 @@ def _finish(
     llm: OllamaClient,
     config: dict,
     output_dir: str,
+    exploit: bool = False,
 ) -> None:
     """Write report and print final summary."""
     console.rule("Phase 4 — Report")
@@ -313,7 +316,8 @@ def _finish(
     if findings:
         with console.status("[cyan]Enriching findings with PoC descriptions …[/cyan]"):
             report_path = write_report(
-                board, target, scan_start, elapsed_s, llm, config, output_dir
+                board, target, scan_start, elapsed_s, llm, config, output_dir,
+                exploit=exploit,
             )
         console.print(f"[green]✓[/green] Report written → [bold]{report_path}[/bold]")
     else:
@@ -355,6 +359,8 @@ def network(
     output_dir:  str           = typer.Option(".",  "--output", "-o", help="Directory for the report file"),
     verbose:     bool          = typer.Option(False,"--verbose","-v", help="Show per-host detail"),
     max_hosts:   int           = typer.Option(50,   "--max-hosts",    help="Maximum hosts to scan"),
+    exploit:     bool          = typer.Option(False,"--exploit",      help="Generate PoC curl commands / exploitation narrative in the report (explicit opt-in, requires client authorization)"),
+    credential_spray: bool     = typer.Option(False,"--credential-spray", help="Reuse credentials confirmed via default_creds on one host to try against the other hosts in this scan (explicit opt-in, requires client authorization)"),
 ):
     """Discover and scan every live host in a CIDR range."""
 
@@ -379,13 +385,15 @@ def network(
         console.print(f"  {msg}")
 
     results, report_path = run_network_scan(
-        cidr          = cidr,
-        llm           = llm,
-        config        = config,
-        output_dir    = output_dir,
-        on_progress   = progress,
-        max_hosts     = max_hosts,
-        host_budget_s = host_budget_s,
+        cidr             = cidr,
+        llm              = llm,
+        config           = config,
+        output_dir       = output_dir,
+        on_progress      = progress,
+        max_hosts        = max_hosts,
+        host_budget_s    = host_budget_s,
+        exploit          = exploit,
+        credential_spray = credential_spray,
     )
 
     # Final summary table

@@ -97,6 +97,7 @@ class Finding:
     mitre_technique: str = ""        # e.g. "Exploit Public-Facing Application"
     mitre_tactic: str = ""           # e.g. "Initial Access"
     mitre_url: str = ""              # link to attack.mitre.org
+    cvss: float | None = None        # nuclei template CVSS score, if known
 
     @property
     def id(self) -> str:

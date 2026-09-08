@@ -432,8 +432,40 @@ def run_nuclei_quick(args: dict, config: dict, timeout: int = 150) -> str:
         "-timeout", "10",
         "-silent",
         "-no-color",
+        "-jsonl",
     ]
-    return _run_subprocess(cmd, timeout)
+    raw = _run_subprocess(cmd, timeout)
+    return _render_nuclei_jsonl(raw)
+
+
+def _render_nuclei_jsonl(raw: str) -> str:
+    """Turn nuclei's -jsonl output into a plain-text summary, preserving the
+    CVSS score nuclei's own templates carry (info.classification.cvss-score)
+    so probe.py can pick it up via CVSS-SCORE: lines instead of losing it to
+    the previous plain-text mode."""
+    lines = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            hit = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        info = hit.get("info", {})
+        classification = info.get("classification") or {}
+        severity  = info.get("severity", "unknown")
+        name      = info.get("name", hit.get("template-id", ""))
+        cve_ids   = classification.get("cve-id") or []
+        cvss      = classification.get("cvss-score")
+        matched   = hit.get("matched-at", hit.get("host", ""))
+        parts = [f"[{severity}] {name} @ {matched}"]
+        if cve_ids:
+            parts.append(f"CVE: {','.join(cve_ids)}")
+        if cvss is not None:
+            parts.append(f"CVSS-SCORE: {cvss}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines) if lines else raw
 
 
 # ===========================================================================
@@ -929,12 +961,18 @@ def run_hydra_quick(args: dict, config: dict, timeout: int = 60) -> str:
     if not _which("hydra"):
         return "ERROR: hydra not found — apt-get install hydra"
 
+    # Credential spray: creds confirmed valid on an earlier host in the same
+    # network scan (--credential-spray) are tried first, ahead of the
+    # built-in default-creds list.
+    extra_creds = config.get("tools", {}).get("hydra", {}).get("extra_creds", [])
+    creds = list(dict.fromkeys(extra_creds + _DEFAULT_CREDS))  # de-dup, keep order
+
     import tempfile
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as uf:
-        uf.write("\n".join(u.split(":")[0] for u in _DEFAULT_CREDS))
+        uf.write("\n".join(u.split(":")[0] for u in creds))
         user_file = uf.name
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as pf:
-        pf.write("\n".join(u.split(":", 1)[1] for u in _DEFAULT_CREDS))
+        pf.write("\n".join(u.split(":", 1)[1] for u in creds))
         pass_file = pf.name
 
     cmd = ["hydra", "-L", user_file, "-P", pass_file,

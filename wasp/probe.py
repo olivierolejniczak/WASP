@@ -338,6 +338,7 @@ def probe_hypothesis(
             mitre_technique = mitre.technique,
             mitre_tactic    = mitre.tactic,
             mitre_url       = mitre.url,
+            cvss            = _extract_cvss(raw_result) if tool_name == "nuclei_quick" else None,
         )
         board.add_finding(finding)
         return finding
@@ -490,6 +491,15 @@ def _has_signal(vuln_class: str, raw_result: str) -> bool:
 # backed by a real _SIGNALS match or it's a guess, not a finding.
 _SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln"}
 
+_CVSS_RE = re.compile(r"CVSS-SCORE:\s*([\d.]+)")
+
+
+def _extract_cvss(raw_result: str) -> float | None:
+    """Pull the highest CVSS score out of nuclei_quick's rendered output
+    (see tools._render_nuclei_jsonl). None if no template carried one."""
+    scores = [float(m) for m in _CVSS_RE.findall(raw_result)]
+    return max(scores) if scores else None
+
 
 def _self_check():
     assert _evidence_confirm("smb_vuln", "Host script results:\n  State: NOT VULNERABLE", "NOT_VULNERABLE", "") == ("NOT_VULNERABLE", "")
@@ -497,6 +507,8 @@ def _self_check():
     assert _evidence_confirm("rdp_vuln", "likely not vulnerable", "NOT_VULNERABLE", "") == ("NOT_VULNERABLE", "")
     assert _has_signal("smb_vuln", "PORT 445/tcp open microsoft-ds") is False
     assert _has_signal("smb_vuln", "State: VULNERABLE") is True
+    assert _extract_cvss("[critical] foo | CVE: CVE-2021-1 | CVSS-SCORE: 9.8") == 9.8
+    assert _extract_cvss("[high] foo") is None
 
 
 if __name__ == "__main__":

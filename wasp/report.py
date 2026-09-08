@@ -240,7 +240,7 @@ def render_markdown(
         lines += [
             f"### {i}. {f.title}",
             "",
-            f"**Severity:** {badge}  ",
+            f"**Severity:** {badge}" + (f" (CVSS {f.cvss})" if f.cvss is not None else "") + "  ",
             f"**Class:** `{f.vuln_class}`  ",
             f"**URL:** `{f.target_url}`  ",
             f"**Discovered:** {f.timestamp.strftime('%H:%M:%S UTC')}",
@@ -312,14 +312,19 @@ def write_report(
     llm: OllamaClient,
     config: dict,
     output_dir: str = ".",
+    exploit: bool = False,
 ) -> str:
     """
     Enrich findings with LLM PoC descriptions, render Markdown, write to disk.
     Returns the path of the written file.
+
+    PoC curl commands / attacker-narrative text are only generated when
+    exploit=True — an explicit opt-in since that text describes how to
+    actively exploit the confirmed finding, not just that it exists.
     """
     findings = board.findings()
 
-    if findings:
+    if findings and exploit:
         # Give the report LLM a bit more headroom for PoC descriptions
         original_max = llm.max_tokens
         llm.max_tokens = max(llm.max_tokens, 400)

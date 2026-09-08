@@ -102,18 +102,36 @@ class HostResult:
     elapsed_s: float = 0.0
 
 
+_CRED_RE = re.compile(r"login:\s*(\S+)\s+password:\s*(\S*)", re.IGNORECASE)
+
+
+def _extract_creds(evidence: str) -> list[str]:
+    """Pull 'user:pass' pairs out of a hydra_quick default_creds finding's
+    raw evidence, for reuse against other hosts (--credential-spray)."""
+    return [f"{u}:{p}" for u, p in _CRED_RE.findall(evidence)]
+
+
 def scan_host(
     info: TargetInfo,
     llm: OllamaClient,
     config: dict,
     host_budget_s: int = 120,
+    known_creds: list[str] | None = None,
 ) -> HostResult:
     """
     Run a full WASP scan against a single classified host.
     Returns a HostResult with findings.
+
+    known_creds: credentials confirmed valid on an earlier host in this same
+    network scan (--credential-spray) — tried first via hydra_quick.
     """
     result = HostResult(info=info)
     t0     = time.monotonic()
+
+    if known_creds:
+        config = dict(config)
+        config["tools"] = dict(config.get("tools", {}))
+        config["tools"]["hydra"] = {**config["tools"].get("hydra", {}), "extra_creds": known_creds}
 
     try:
         # Determine target string for recon
@@ -171,6 +189,8 @@ def run_network_scan(
     max_hosts: int = 50,
     host_budget_s: int = 120,
     discovery_timeout: int = 30,
+    exploit: bool = False,
+    credential_spray: bool = False,
 ) -> tuple[list[HostResult], str]:
     """
     Full pipeline:
@@ -214,6 +234,7 @@ def run_network_scan(
 
     # Step 3: scan each host
     all_results: list[HostResult] = []
+    known_creds: list[str] = []
     for i, info in enumerate(classified, 1):
         if info.target_type in ("iot", "unknown") and not info.open_ports:
             progress(f"[{i}/{len(classified)}] {info.host} — skipping (no open ports)")
@@ -222,8 +243,18 @@ def run_network_scan(
             continue
 
         progress(f"[{i}/{len(classified)}] Scanning {info.host} ({info.target_type}) …")
-        hr = scan_host(info, llm, config, host_budget_s=host_budget_s)
+        hr = scan_host(
+            info, llm, config, host_budget_s=host_budget_s,
+            known_creds=known_creds if credential_spray else None,
+        )
         all_results.append(hr)
+
+        if credential_spray:
+            for f in hr.findings:
+                if f.vuln_class == "default_creds":
+                    for cred in _extract_creds(f.evidence):
+                        if cred not in known_creds:
+                            known_creds.append(cred)
 
         n = len(hr.findings)
         elapsed = f"{hr.elapsed_s:.0f}s"
@@ -243,6 +274,7 @@ def run_network_scan(
         all_results, cidr, scan_start,
         time.monotonic() - t_total,
         llm, config, output_dir,
+        exploit=exploit,
     )
     progress(f"Report written → {report_path}")
 
@@ -261,6 +293,7 @@ def _render_network_report(
     llm: OllamaClient,
     config: dict,
     output_dir: str,
+    exploit: bool = False,
 ) -> str:
     import os
     from pathlib import Path
@@ -295,7 +328,7 @@ def _render_network_report(
 
     # All findings consolidated
     all_findings = [f for r in results for f in r.findings]
-    if all_findings:
+    if all_findings and exploit:
         # Only enrich findings — skip if llm is slow (best-effort)
         try:
             original_max = llm.max_tokens
