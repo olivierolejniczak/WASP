@@ -218,17 +218,18 @@ def render_markdown(
 
     # --- Summary table ---
     lines += ["## Summary", ""]
-    lines += ["| # | Severity | Title | URL | MITRE ATT&CK |",
-              "|---|----------|-------|-----|--------------|"]
+    lines += ["| # | Severity | CVSS | Title | URL | MITRE ATT&CK |",
+              "|---|----------|------|-------|-----|--------------|"]
     for i, f in enumerate(findings, 1):
         badge = _BADGE[f.severity]
         title = f.title.replace("|", "\\|")
         url   = f.target_url.replace("|", "\\|")
+        cvss  = f.cvss if f.cvss is not None else "—"
         if f.mitre_id:
             mitre_cell = f"[{f.mitre_id}]({f.mitre_url}) {f.mitre_tactic}"
         else:
             mitre_cell = "—"
-        lines.append(f"| {i} | {badge} | {title} | `{url}` | {mitre_cell} |")
+        lines.append(f"| {i} | {badge} | {cvss} | {title} | `{url}` | {mitre_cell} |")
     lines.append("")
 
     # --- Individual findings ---

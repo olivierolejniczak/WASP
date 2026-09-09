@@ -374,14 +374,15 @@ def _render_network_report(
             Severity.LOW:      "🟢 LOW",
             Severity.INFO:     "🔵 INFO",
         }
-        lines += ["| # | Host | Severity | Title |",
-                  "|---|------|----------|-------|"]
+        lines += ["| # | Host | Severity | CVSS | Title |",
+                  "|---|------|----------|------|-------|"]
         _SEV_ORDER = ["critical","high","medium","low","info"]
         for i, f in enumerate(sorted(all_findings,
                                key=lambda x: _SEV_ORDER.index(x.severity.value) if x.severity.value in _SEV_ORDER else 9), 1):
             badge = _BADGE[f.severity]
+            cvss = f.cvss if f.cvss is not None else "—"
             host_label = f.target_url.split("//")[-1].split("/")[0] if "//" in f.target_url else f.target_url.split("/")[0]
-            lines.append(f"| {i} | `{host_label}` | {badge} | {f.title} |")
+            lines.append(f"| {i} | `{host_label}` | {badge} | {cvss} | {f.title} |")
         lines.append("")
 
         # Per-host finding sections
