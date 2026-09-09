@@ -39,7 +39,7 @@ VALID_CLASSES = {
     # Web
     "sqli", "auth_bypass", "jwt_attack", "idor", "mass_assignment",
     "path_traversal", "lfi", "xss_reflected", "xss_stored",
-    "security_misconfig", "outdated_components", "info_disclosure",
+    "security_misconfig", "outdated_components", "info_disclosure", "tls_weak",
     # Windows / SMB
     "smb_enum", "smb_vuln", "smb_signing", "null_session",
     "anonymous_smb", "rdp_info", "rdp_vuln", "default_creds",
@@ -59,6 +59,7 @@ _FALLBACK_HYPOTHESES = [
     Hypothesis("mass_assignment", 4, "/api/Users",         "User registration may accept role field"),
     Hypothesis("jwt_attack",      5, "/rest/user/login",   "App uses JWT; alg:none attack worth testing"),
     Hypothesis("security_misconfig", 6, "/",              "Check security headers and verbose errors"),
+    Hypothesis("tls_weak",        7, "/",                 "Check for weak TLS ciphers/protocols and cert expiry"),
 ]
 
 _FALLBACK_WINDOWS = [
@@ -95,6 +96,7 @@ _FALLBACK_ROUTER = [
     Hypothesis("snmp_enum",      4, "/", "Test SNMP with default community strings"),
     Hypothesis("ssh_audit",      5, "/", "Audit SSH if management port is open"),
     Hypothesis("banner_info",    6, "/", "Grab banners from all open ports"),
+    Hypothesis("tls_weak",       7, "/", "Check router's HTTPS admin panel for weak TLS"),
 ]
 
 _FALLBACK_BY_TYPE = {

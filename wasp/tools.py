@@ -1132,6 +1132,7 @@ CLASS_TOOLS.update({
     # Generic
     "open_service":       ["banner_grab", "nmap_script"],
     "firewall_bypass":    ["nmap_script"],
+    "tls_weak":           ["nmap_script"],
 })
 
 # Extend binary_map for available_tools()

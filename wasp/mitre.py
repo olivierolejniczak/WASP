@@ -275,6 +275,13 @@ _MAPPING: dict[str, MitreEntry] = {
         tactic_id    = "TA0005",
         url          = "https://attack.mitre.org/techniques/T1562/004/",
     ),
+    "tls_weak": MitreEntry(
+        technique_id = "T1600.002",
+        technique    = "Weaken Encryption: Reduce Key Space",
+        tactic       = "Defense Evasion",
+        tactic_id    = "TA0005",
+        url          = "https://attack.mitre.org/techniques/T1600/002/",
+    ),
 }
 
 _UNKNOWN = MitreEntry(

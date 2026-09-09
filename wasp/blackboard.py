@@ -69,6 +69,7 @@ _CLASS_SEVERITY: dict[str, Severity] = {
     # Network / generic
     "open_service":       Severity.INFO,
     "firewall_bypass":    Severity.MEDIUM,
+    "tls_weak":           Severity.MEDIUM,
 }
 
 def severity_for_class(vuln_class: str) -> Severity:

@@ -455,6 +455,8 @@ _SIGNALS: dict[str, list[str]] = {
     "smtp_enum":       ["220", "ehlo", "vrfy", "expn", "smtp"],
     "db_enum":         ["version:", "mysql", "mssql", "postgres", "database:"],
     "banner_info":     ["ssh-", "ftp", "smtp", "220", "230", "http/", "server:"],
+    "tls_weak":        ["sslv3", "tlsv1.0", "tlsv1.1", "least strength: c",
+                         "least strength: d", "least strength: f"],
 }
 
 
@@ -489,7 +491,7 @@ def _has_signal(vuln_class: str, raw_result: str) -> bool:
 # (e.g. smb-vuln-ms17-010's "State: VULNERABLE" line) rather than something
 # an LLM needs to interpret from prose — a CONFIRMED verdict here must be
 # backed by a real _SIGNALS match or it's a guess, not a finding.
-_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln"}
+_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln", "tls_weak"}
 
 _CVSS_RE = re.compile(r"CVSS-SCORE:\s*([\d.]+)")
 
@@ -509,6 +511,8 @@ def _self_check():
     assert _has_signal("smb_vuln", "State: VULNERABLE") is True
     assert _extract_cvss("[critical] foo | CVE: CVE-2021-1 | CVSS-SCORE: 9.8") == 9.8
     assert _extract_cvss("[high] foo") is None
+    assert _has_signal("tls_weak", "|   TLSv1.0:\n|     least strength: C") is True
+    assert _has_signal("tls_weak", "|   TLSv1.3:\n|     least strength: A") is False
 
 
 if __name__ == "__main__":
@@ -578,6 +582,7 @@ def _title_for(vuln_class: str, url: str) -> str:
         # Generic
         "open_service":       "Unexpected Service Exposed",
         "firewall_bypass":    "Firewall Rule Bypass",
+        "tls_weak":           "Weak TLS Configuration",
     }
     base = _TITLES.get(vuln_class, vuln_class.replace("_", " ").title())
     # Append path for clarity
