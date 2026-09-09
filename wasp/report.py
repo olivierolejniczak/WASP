@@ -317,6 +317,9 @@ def render_markdown(
         if f.cve:
             lines += [f"**{t('col_cve', lang)}:** {f.cve}", ""]
 
+        if f.exploit_refs:
+            lines += [f"**{t('known_exploits', lang)}:**", "", "```", f.exploit_refs, "```", ""]
+
         if f.description:
             lines += [f"**{t('description', lang)}:**", "", f.description, ""]
 

@@ -22,7 +22,7 @@ from wasp.llm import OllamaClient, CompletionResponse
 from wasp.mitre import lookup as mitre_lookup
 from wasp.planner import Hypothesis
 from wasp.recon import ReconFacts
-from wasp.tools import run_tool, tools_for_class, run_http_request, run_jwt_lite
+from wasp.tools import run_tool, tools_for_class, run_http_request, run_jwt_lite, searchsploit_lookup
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ def probe_hypothesis(
     tool_name = resp1.tool_call.name
     tool_args = resp1.tool_call.arguments
 
-    if tool_name == "bloodhound_collect":
+    if tool_name in ("bloodhound_collect", "smb_enum", "crackmapexec_scan"):
         creds = config.get("credentials", {})
         if creds.get("username"):
             tool_args["username"] = creds["username"]
@@ -331,6 +331,7 @@ def probe_hypothesis(
 
     if verdict == "CONFIRMED":
         mitre = mitre_lookup(hypothesis.vuln_class)
+        cve = _extract_cve(raw_result)
         finding = Finding(
             vuln_class      = hypothesis.vuln_class,
             title           = _title_for(hypothesis.vuln_class, probe_url),
@@ -347,7 +348,8 @@ def probe_hypothesis(
             mitre_tactic    = mitre.tactic,
             mitre_url       = mitre.url,
             cvss            = _extract_cvss(raw_result) if tool_name == "nuclei_quick" else None,
-            cve             = _extract_cve(raw_result),
+            cve             = cve,
+            exploit_refs    = searchsploit_lookup(cve)[:1500] if cve else "",
         )
         board.add_finding(finding)
         return finding
@@ -458,6 +460,7 @@ _SIGNALS: dict[str, list[str]] = {
     "kerberoast":      ["$krb5tgs$", "spn", "service ticket"],
     "ad_null_bind":    ["namingcontexts", "defaultnamingcontext", "success"],
     "ad_bloodhound":   ["compressing output", "done in", "found ad domain"],
+    "ad_pivot":        ["pwn3d!"],
     # Linux services
     "ssh_audit":       ["ssh-", "ecdsa", "rsa", "ed25519", "ssh_host"],
     "ftp_anon":        ["anonymous ftp login allowed", "230", "ftp-anon"],
@@ -501,7 +504,7 @@ def _has_signal(vuln_class: str, raw_result: str) -> bool:
 # (e.g. smb-vuln-ms17-010's "State: VULNERABLE" line) rather than something
 # an LLM needs to interpret from prose — a CONFIRMED verdict here must be
 # backed by a real _SIGNALS match or it's a guess, not a finding.
-_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln", "tls_weak", "ad_bloodhound"}
+_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln", "tls_weak", "ad_bloodhound", "ad_pivot"}
 
 _CVSS_RE = re.compile(r"CVSS-SCORE:\s*([\d.]+)")
 _CVE_RE  = re.compile(r"CVE-\d{4}-\d{4,7}")
@@ -539,6 +542,10 @@ def _self_check():
     assert _has_signal("ad_bloodhound", "INFO: Compressing output into 20260909_bloodhound.zip") is True
     assert _has_signal("ad_bloodhound", "ERROR: Could not connect to LDAP") is False
     assert _title_for("ad_bloodhound", "/") == "Active Directory Attack Path Data Collected (BloodHound) — /"
+    assert "ad_pivot" in _SCRIPT_VERDICT_CLASSES
+    assert _has_signal("ad_pivot", "SMB  10.0.0.5  445  DC01  [+] corp.local\\admin:pass (Pwn3d!)") is True
+    assert _has_signal("ad_pivot", "SMB  10.0.0.5  445  DC01  [-] corp.local\\admin:pass STATUS_LOGON_FAILURE") is False
+    assert _title_for("ad_pivot", "/") == "Lateral Movement — Credential Grants Local Admin (Pwn3d!) — /"
 
 
 if __name__ == "__main__":
@@ -599,6 +606,7 @@ def _title_for(vuln_class: str, url: str) -> str:
         "ad_null_bind":       "LDAP Null Bind Allowed",
         "ad_password_policy": "Weak AD Password Policy",
         "ad_bloodhound":      "Active Directory Attack Path Data Collected (BloodHound)",
+        "ad_pivot":           "Lateral Movement — Credential Grants Local Admin (Pwn3d!)",
         # Linux / services
         "ssh_audit":          "SSH Configuration and Algorithm Disclosure",
         "ftp_anon":           "Anonymous FTP Access Allowed",

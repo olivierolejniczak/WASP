@@ -155,8 +155,33 @@ WASP works with only Python installed. External tools improve coverage:
 | `sqlmap` | SQL injection | `apt-get install sqlmap` |
 | `nikto` | Misconfig scan | `apt-get install nikto` |
 | `nuclei` | Template scanning | https://nuclei.projectdiscovery.io |
+| `crackmapexec` / `nxc` | SMB credential validation, lateral-movement check | `pipx install git+https://github.com/Pennyw0rth/NetExec` |
+| `bloodhound-python` | AD attack-path collection (BloodHound ingest) | `pip install bloodhound` |
+| `searchsploit` | Offline ExploitDB lookup for confirmed CVEs | `apt-get install exploitdb` |
 
 Without external tools, WASP falls back to pure-Python HTTP probing for recon and uses only `http_request` and `jwt_lite` for probes.
+
+All of the above (including `crackmapexec`, `bloodhound`, and `exploitdb`) are installed automatically by `deploy.sh`.
+
+---
+
+## Active Directory / lateral movement
+
+```bash
+# Authenticated AD scan — creds are injected server-side only, the LLM
+# never sees or guesses them (smb_enum, bloodhound_collect, crackmapexec_scan)
+python wasp.py scan 192.168.1.10 --type activedir \
+    --domain-user svc_pentest --domain-pass 'P@ssw0rd!'
+```
+
+This unlocks, on top of the unauthenticated AD checks (`ad_enum`, `kerberoast`,
+`asreproast`, `ad_null_bind`):
+- **`ad_bloodhound`** — full attack-path collection via `bloodhound-python`, ready to import into the BloodHound GUI.
+- **`ad_pivot`** — validates the supplied (or Kerberoast/AS-REP-recovered) credential against a host via `crackmapexec`; a confirmed finding means that account has local admin rights there (lateral movement / pivot potential).
+
+Any confirmed finding with a known CVE is automatically enriched with matching
+public exploit references from an offline ExploitDB lookup (`searchsploit`) —
+no internet call, no LLM involved.
 
 ---
 
@@ -224,7 +249,7 @@ wasp.py          CLI (typer + rich)
 ├── report.py    Phase 4 — LLM PoC enrichment + Markdown render
 ├── blackboard.py  In-memory Finding store (thread-safe)
 ├── llm.py       Ollama client — native tool_calls + JSON fallback parser
-└── tools.py     8 tool wrappers + CLASS_TOOLS mapping + run_tool() dispatcher
+└── tools.py     19 tool wrappers + CLASS_TOOLS mapping + run_tool() dispatcher
 ```
 
 ---

@@ -215,6 +215,17 @@ def _probe_http(facts: ReconFacts, config: dict, timeout: int = 20) -> None:
             ("wordpress","WordPress"),
             ("drupal",   "Drupal"),
             ("jquery",   "jQuery"),
+            # Network/security appliance vendors — surfaces device identity in
+            # the recon summary so the tester/report knows which CVE database
+            # to check even though WASP has no vendor-specific NSE scripts.
+            ("fortinet", "Fortinet FortiOS"),
+            ("fortigate","Fortinet FortiOS"),
+            ("cisco",    "Cisco"),
+            ("mikrotik", "MikroTik RouterOS"),
+            ("pan-os",   "Palo Alto PAN-OS"),
+            ("pfsense",  "pfSense"),
+            ("sonicwall","SonicWall"),
+            ("ubiquiti", "Ubiquiti"),
         ]
         for marker, name in _TECH_HINTS:
             if marker in body_lower and name not in facts.technologies:

@@ -48,6 +48,18 @@ WASP will run recon, plan, then probe as many hypotheses as fit in 5 minutes. Re
 
 ---
 
+## 3b. Authenticated Active Directory scan (BloodHound, pivot check)
+
+```bash
+python wasp.py scan 192.168.1.10 --type activedir \
+    --domain-user svc_pentest --domain-pass 'P@ssw0rd!'
+```
+
+Creds are only ever used server-side (BloodHound collection, SMB enum,
+`crackmapexec` pivot check) — never sent to the LLM.
+
+---
+
 ## 4. See what WASP plans without running any probes
 
 ```bash

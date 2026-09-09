@@ -60,6 +60,7 @@ _CLASS_SEVERITY: dict[str, Severity] = {
     "ad_null_bind":       Severity.HIGH,
     "ad_password_policy": Severity.LOW,
     "ad_bloodhound":      Severity.HIGH,
+    "ad_pivot":           Severity.CRITICAL,
     # Linux / services
     "ssh_audit":          Severity.LOW,
     "ftp_anon":           Severity.HIGH,
@@ -101,6 +102,7 @@ class Finding:
     mitre_url: str = ""              # link to attack.mitre.org
     cvss: float | None = None        # nuclei template CVSS score, if known
     cve: str = ""                    # CVE ID(s), comma-separated, if known
+    exploit_refs: str = ""           # known public exploits (ExploitDB), if any
 
     @property
     def id(self) -> str:
@@ -214,6 +216,7 @@ def _self_check():
     assert f2.timestamp == f.timestamp
     assert f2.cvss == 9.8
     assert severity_for_class("ad_bloodhound") == Severity.HIGH
+    assert severity_for_class("ad_pivot") == Severity.CRITICAL
 
 
 if __name__ == "__main__":

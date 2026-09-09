@@ -919,6 +919,12 @@ info "Installing impacket (AD attack tools)…"
     success "impacket installed" || \
     warn "impacket install failed — AD/Kerberos features limited"
 
+# Install bloodhound-python for AD attack-path collection (bloodhound_collect tool)
+info "Installing bloodhound (AD attack-path collector)…"
+"$VENV_PIP" install -q bloodhound 2>/dev/null && \
+    success "bloodhound installed" || \
+    warn "bloodhound install failed — bloodhound_collect tool unavailable"
+
 # ---------------------------------------------------------------------------
 # crackmapexec / netexec — network/AD scan support (wasp doctor checks for
 # the binary name 'crackmapexec', but the project renamed to netexec and

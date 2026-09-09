@@ -220,6 +220,13 @@ _MAPPING: dict[str, MitreEntry] = {
         tactic_id    = "TA0007",
         url          = "https://attack.mitre.org/techniques/T1482/",
     ),
+    "ad_pivot": MitreEntry(
+        technique_id = "T1021.002",
+        technique    = "Remote Services: SMB/Windows Admin Shares",
+        tactic       = "Lateral Movement",
+        tactic_id    = "TA0008",
+        url          = "https://attack.mitre.org/techniques/T1021/002/",
+    ),
 
     # ── Linux / services ────────────────────────────────────────────────────
 

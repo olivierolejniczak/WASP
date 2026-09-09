@@ -45,7 +45,7 @@ VALID_CLASSES = {
     "anonymous_smb", "rdp_info", "rdp_vuln", "default_creds",
     # Active Directory
     "ad_enum", "kerberoast", "asreproast", "ad_null_bind", "ad_password_policy",
-    "ad_bloodhound",
+    "ad_bloodhound", "ad_pivot",
     # Linux / services
     "ssh_audit", "ftp_anon", "snmp_enum", "smtp_enum", "db_enum", "banner_info",
     # Generic
@@ -80,6 +80,7 @@ _FALLBACK_AD = [
     Hypothesis("smb_vuln",        5, "/", "Check DC for SMB vulnerabilities"),
     Hypothesis("ad_password_policy",6,"/","Enumerate password policy via LDAP"),
     Hypothesis("ad_bloodhound",   7, "/", "Collect AD attack-path data (users/groups/computers/ACLs) for BloodHound"),
+    Hypothesis("ad_pivot",        8, "/", "Test recovered/supplied domain credential for local admin access (lateral movement)"),
 ]
 
 _FALLBACK_LINUX = [

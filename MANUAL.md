@@ -393,6 +393,7 @@ These are the classes WASP can detect. Each maps to a specific set of tools and 
 | `security_misconfig` | A05 Security Misconfiguration | Missing security headers, verbose errors, exposed paths | nikto findings, header analysis |
 | `outdated_components` | A06 Vulnerable Components | Known CVEs in libraries and frameworks | nuclei template matches |
 | `info_disclosure` | A09 Logging/Monitoring | Exposed config files, API keys, source code | `.env`, `package.json`, `/actuator/env` |
+| `ad_pivot` | A07 Auth Failures | Credential (own or Kerberoast/AS-REP-recovered) validated for local admin access on a host | `Pwn3d!` marker in `crackmapexec` output |
 
 ---
 
@@ -449,6 +450,16 @@ Parameters: `url`
 In-process JWT operations: decode, forge with alg:none, forge with HS256. No subprocess, no external dependencies, runs in ~1ms.
 
 Parameters: `operation` (`decode` | `forge_none` | `forge_hs256`), `token`, `secret` (for HS256), `payload_overrides` (dict)
+
+### `crackmapexec_scan` (requires `crackmapexec` or `nxc` binary)
+
+Validates a credential against a host over SMB and reports its access level. A `Pwn3d!` marker means local admin — confirmed lateral-movement/pivot potential. Only reachable for the `ad_pivot` hypothesis class.
+
+Parameters: `host`, `username`, `password` — `username`/`password` are overridden server-side from `--domain-user`/`--domain-pass` if set (never LLM-supplied).
+
+### Exploit-DB enrichment (not an LLM tool — automatic, deterministic)
+
+Any confirmed finding carrying a CVE is enriched by shelling out to `searchsploit --cve <CVE>` and attaching matching public exploit titles/EDB-IDs to the report (`Finding.exploit_refs`). No LLM call, no internet — pure offline ExploitDB lookup. Silently skipped if `searchsploit` is not installed.
 
 ---
 

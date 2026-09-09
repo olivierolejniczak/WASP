@@ -1146,6 +1146,48 @@ def run_bloodhound_collect(args: dict, config: dict, timeout: int = 120) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 19. crackmapexec_scan — SMB/AD lateral-movement credential check
+# ---------------------------------------------------------------------------
+
+CRACKMAPEXEC_SCAN_TOOL = Tool(
+    name="crackmapexec_scan",
+    description=(
+        "Run crackmapexec (netexec) against a host over SMB to validate a "
+        "domain/local credential and report its access level. A 'Pwn3d!' "
+        "marker in the output means the account has local admin rights on "
+        "this host — confirmed lateral-movement/pivot potential. Requires "
+        "a valid username and password (even low-privilege)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "host":     {"type": "string", "description": "Target IP or hostname"},
+            "username": {"type": "string", "description": "Username to test (required)"},
+            "password": {"type": "string", "description": "Password to test (required)"},
+        },
+        "required": ["host", "username", "password"],
+    },
+)
+
+def run_crackmapexec_scan(args: dict, config: dict, timeout: int = 60) -> str:
+    host     = args.get("host", "")
+    username = args.get("username", "")
+    password = args.get("password", "")
+    if not host or not username or not password:
+        return "ERROR: host, username, and password are required"
+
+    if _which("crackmapexec"):
+        binary = "crackmapexec"
+    elif _which("nxc"):
+        binary = "nxc"
+    else:
+        return "ERROR: crackmapexec/nxc not found — install with: pipx install git+https://github.com/Pennyw0rth/NetExec"
+
+    cmd = [binary, "smb", host, "-u", username, "-p", password]
+    return _truncate(_run_subprocess(cmd, timeout))
+
+
+# ---------------------------------------------------------------------------
 # Update registries
 # ---------------------------------------------------------------------------
 
@@ -1160,6 +1202,7 @@ ALL_TOOLS.update({
     "snmp_enum":           (SNMP_ENUM_TOOL,            run_snmp_enum),
     "banner_grab":         (BANNER_GRAB_TOOL,          run_banner_grab),
     "bloodhound_collect":  (BLOODHOUND_COLLECT_TOOL,   run_bloodhound_collect),
+    "crackmapexec_scan":   (CRACKMAPEXEC_SCAN_TOOL,    run_crackmapexec_scan),
 })
 
 CLASS_TOOLS.update({
@@ -1179,6 +1222,7 @@ CLASS_TOOLS.update({
     "ad_null_bind":       ["nmap_script"],
     "ad_password_policy": ["nmap_script"],
     "ad_bloodhound":      ["bloodhound_collect"],
+    "ad_pivot":           ["crackmapexec_scan"],
     # Linux services
     "ssh_audit":          ["nmap_script", "banner_grab"],
     "ftp_anon":           ["nmap_script", "banner_grab"],
@@ -1204,12 +1248,30 @@ _EXTRA_BINARY_MAP = {
     "impacket_npusers": None,     # checked via _find_impacket_script
     "impacket_spns":    None,
     "bloodhound_collect": "bloodhound-python",
+    "crackmapexec_scan": "crackmapexec",
 }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def searchsploit_lookup(cve_csv: str, timeout: int = 15) -> str:
+    """
+    Offline exploit-db lookup (searchsploit) for known public exploits
+    matching confirmed CVE ID(s). Deterministic, no LLM — enriches a
+    finding with ready references instead of asking a small model to
+    invent PoC code. Returns "" if searchsploit is absent or nothing matches.
+    """
+    if not cve_csv or not _which("searchsploit"):
+        return ""
+    results = []
+    for cve in [c.strip() for c in cve_csv.split(",") if c.strip()]:
+        out = _run_subprocess(["searchsploit", "--cve", cve], timeout)
+        if out and "No Result" not in out and "Exploits: No Result" not in out:
+            results.append(f"[{cve}]\n{out.strip()}")
+    return "\n".join(results)
+
 
 def _find_impacket_script(name: str) -> str | None:
     """Locate an impacket script in the venv or system path."""
@@ -1236,6 +1298,10 @@ def _self_check():
     assert "bloodhound_collect" in CLASS_TOOLS.get("ad_bloodhound", [])
     assert ALL_TOOLS["bloodhound_collect"][0].name == "bloodhound_collect"
     assert "are required" in run_bloodhound_collect({}, {})
+    assert "crackmapexec_scan" in CLASS_TOOLS.get("ad_pivot", [])
+    assert ALL_TOOLS["crackmapexec_scan"][0].name == "crackmapexec_scan"
+    assert "are required" in run_crackmapexec_scan({}, {})
+    assert searchsploit_lookup("") == ""
 
 
 if __name__ == "__main__":
