@@ -111,6 +111,14 @@ class Finding:
         d["timestamp"] = self.timestamp.isoformat()
         return d
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "Finding":
+        """Reverse of to_dict(), used to reload findings from a checkpoint."""
+        d = dict(d)
+        d["severity"]  = Severity(d["severity"])
+        d["timestamp"] = datetime.fromisoformat(d["timestamp"])
+        return cls(**d)
+
 
 # ---------------------------------------------------------------------------
 # Blackboard
@@ -197,6 +205,11 @@ def _self_check():
     assert d["severity"] == "high"
     assert isinstance(d["timestamp"], str)
     assert d["cvss"] == 9.8
+
+    f2 = Finding.from_dict(d)
+    assert f2.severity == Severity.HIGH
+    assert f2.timestamp == f.timestamp
+    assert f2.cvss == 9.8
 
 
 if __name__ == "__main__":

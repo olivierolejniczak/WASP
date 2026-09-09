@@ -10,14 +10,17 @@ Produces one Finding list and one combined Markdown report.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 import subprocess
 import shutil
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 from wasp.blackboard import Blackboard, Finding
 from wasp.classifier import classify, reclassify, TargetInfo
@@ -181,6 +184,53 @@ def scan_host(
 # Full network scan
 # ---------------------------------------------------------------------------
 
+def _checkpoint_path(cidr: str, output_dir: str) -> str:
+    slug = cidr.replace("/", "-").replace(".", "-")
+    return os.path.join(output_dir, f".wasp-checkpoint-{slug}.json")
+
+
+def _save_checkpoint(path: str, cidr: str, classified: list[TargetInfo],
+                      all_results: list) -> None:
+    """Persist scan progress so a killed run can resume instead of restarting."""
+    data = {
+        "cidr": cidr,
+        "hosts": [asdict(info) for info in classified],
+        "results": [
+            None if r is None else {
+                "findings": [f.to_dict() for f in r.findings],
+                "error": r.error,
+                "elapsed_s": r.elapsed_s,
+            }
+            for r in all_results
+        ],
+    }
+    try:
+        Path(path).write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_checkpoint(path: str, cidr: str):
+    """Return (classified, all_results) from a matching checkpoint, or None."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if data.get("cidr") != cidr:
+        return None
+    classified = [TargetInfo(**h) for h in data["hosts"]]
+    all_results = [
+        None if r is None else HostResult(
+            info=classified[i],
+            findings=[Finding.from_dict(fd) for fd in r["findings"]],
+            error=r["error"],
+            elapsed_s=r["elapsed_s"],
+        )
+        for i, r in enumerate(data["results"])
+    ]
+    return classified, all_results
+
+
 def run_network_scan(
     cidr: str,
     llm: OllamaClient,
@@ -193,6 +243,7 @@ def run_network_scan(
     exploit: bool = False,
     credential_spray: bool = False,
     max_workers: int = 8,
+    resume: bool = True,
 ) -> tuple[list[HostResult], str]:
     """
     Full pipeline:
@@ -203,6 +254,9 @@ def run_network_scan(
          hosts confirmed
       4. Render combined report
 
+    Progress is checkpointed to disk after every host, so a killed run can
+    resume (resume=True, default) instead of rescanning already-done hosts.
+
     Returns (results, report_path).
     """
     scan_start = datetime.utcnow()
@@ -212,34 +266,50 @@ def run_network_scan(
         if on_progress:
             on_progress(msg)
 
-    # Step 1: discover
-    progress(f"Discovering hosts in {cidr} …")
-    hosts = discover_hosts(cidr, timeout=discovery_timeout)
-    if not hosts:
-        progress("No live hosts found.")
-        return [], ""
-    progress(f"Found {len(hosts)} live hosts")
+    checkpoint_path = _checkpoint_path(cidr, output_dir)
+    resumed = _load_checkpoint(checkpoint_path, cidr) if resume else None
 
-    # Limit
-    hosts = hosts[:max_hosts]
+    if resumed:
+        classified, all_results = resumed
+        done = sum(1 for r in all_results if r is not None)
+        progress(f"Resuming {cidr} from checkpoint ({done}/{len(classified)} hosts already done)")
+    else:
+        # Step 1: discover
+        progress(f"Discovering hosts in {cidr} …")
+        hosts = discover_hosts(cidr, timeout=discovery_timeout)
+        if not hosts:
+            progress("No live hosts found.")
+            return [], ""
+        progress(f"Found {len(hosts)} live hosts")
 
-    # Step 2: classify
-    progress("Fingerprinting and classifying hosts …")
-    classified = quick_classify_hosts(hosts, timeout=45)
+        # Limit
+        hosts = hosts[:max_hosts]
 
-    # Sort: windows/activedir first (most interesting), then web, then rest
-    _ORDER = {"activedir": 0, "windows": 1, "web": 2, "database": 3,
-              "linux": 4, "router": 5, "iot": 9, "unknown": 9}
-    classified.sort(key=lambda i: _ORDER.get(i.target_type, 9))
+        # Step 2: classify
+        progress("Fingerprinting and classifying hosts …")
+        classified = quick_classify_hosts(hosts, timeout=45)
 
-    for info in classified:
-        ports_str = ",".join(str(p) for p in info.open_ports[:6])
-        progress(f"  {info.host:<18} → {info.target_type:<12} ports=[{ports_str}]")
+        # Sort: windows/activedir first (most interesting), then web, then rest
+        _ORDER = {"activedir": 0, "windows": 1, "web": 2, "database": 3,
+                  "linux": 4, "router": 5, "iot": 9, "unknown": 9}
+        classified.sort(key=lambda i: _ORDER.get(i.target_type, 9))
+
+        for info in classified:
+            ports_str = ",".join(str(p) for p in info.open_ports[:6])
+            progress(f"  {info.host:<18} → {info.target_type:<12} ports=[{ports_str}]")
+
+        all_results: list[HostResult | None] = [None] * len(classified)
 
     # Step 3: scan each host
     n_hosts = len(classified)
-    all_results: list[HostResult | None] = [None] * n_hosts
     known_creds: list[str] = []
+    for r in all_results:
+        if r:
+            for f in r.findings:
+                if f.vuln_class == "default_creds":
+                    for cred in _extract_creds(f.evidence):
+                        if cred not in known_creds:
+                            known_creds.append(cred)
 
     def _report_result(i: int, hr: HostResult) -> None:
         n = len(hr.findings)
@@ -255,6 +325,8 @@ def run_network_scan(
 
     scannable: list[tuple[int, TargetInfo]] = []
     for i, info in enumerate(classified):
+        if all_results[i] is not None:
+            continue
         if info.target_type in ("iot", "unknown") and not info.open_ports:
             progress(f"[{i+1}/{n_hosts}] {info.host} — skipping (no open ports)")
             all_results[i] = HostResult(info=info)
@@ -273,6 +345,7 @@ def run_network_scan(
                         if cred not in known_creds:
                             known_creds.append(cred)
             _report_result(i, hr)
+            _save_checkpoint(checkpoint_path, cidr, classified, all_results)
     else:
         progress(f"Scanning {len(scannable)} host(s) in parallel (max {max_workers} at a time) …")
         with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(scannable)))) as pool:
@@ -285,6 +358,7 @@ def run_network_scan(
                 hr = fut.result()
                 all_results[i] = hr
                 _report_result(i, hr)
+                _save_checkpoint(checkpoint_path, cidr, classified, all_results)
 
     # Step 4: report — write file first (even without enrichment), then enrich if time allows
     total_findings = sum(len(r.findings) for r in all_results)
@@ -297,6 +371,11 @@ def run_network_scan(
         exploit=exploit,
     )
     progress(f"Report written → {report_path}")
+
+    try:
+        os.remove(checkpoint_path)
+    except OSError:
+        pass
 
     return all_results, report_path
 
@@ -315,9 +394,6 @@ def _render_network_report(
     output_dir: str,
     exploit: bool = False,
 ) -> str:
-    import os
-    from pathlib import Path
-
     model = config.get("orchestrator", {}).get("model", "unknown")
     m, s  = divmod(int(elapsed_s), 60)
     dur   = f"{m}m {s}s"
@@ -459,8 +535,34 @@ def _self_check():
     try:
         results, _ = ns.run_network_scan("10.0.0.0/24", llm=None, config={}, output_dir="/tmp")
         assert [r.info.host for r in results] == fake_hosts
+
+        # Checkpoint/resume: a scan that dies partway through must resume
+        # only the hosts that never completed, not restart from scratch.
+        cp = ns._checkpoint_path("10.0.0.0/24", "/tmp")
+        n_calls = {"n": 0}
+
+        def flaky_scan_host(info, llm, config, host_budget_s=120, known_creds=None):
+            n_calls["n"] += 1
+            if info.host == "10.0.0.3":
+                raise RuntimeError("simulated crash")
+            return HostResult(info=info, elapsed_s=0.1)
+
+        ns.scan_host = flaky_scan_host
+        try:
+            ns.run_network_scan("10.0.0.0/24", llm=None, config={}, output_dir="/tmp", max_workers=1)
+        except RuntimeError:
+            pass
+        assert os.path.exists(cp), "checkpoint should survive a crash"
+        assert n_calls["n"] > 0
+
+        ns.scan_host = fake_scan_host
+        results2, _ = ns.run_network_scan("10.0.0.0/24", llm=None, config={}, output_dir="/tmp", max_workers=1)
+        assert [r.info.host for r in results2] == fake_hosts
+        assert not os.path.exists(cp), "checkpoint should be cleared after a clean finish"
     finally:
         ns.discover_hosts, ns.quick_classify_hosts, ns.scan_host = orig_discover, orig_classify, orig_scan_host
+        if os.path.exists(ns._checkpoint_path("10.0.0.0/24", "/tmp")):
+            os.remove(ns._checkpoint_path("10.0.0.0/24", "/tmp"))
 
 
 if __name__ == "__main__":

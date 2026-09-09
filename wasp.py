@@ -361,6 +361,7 @@ def network(
     max_hosts:   int           = typer.Option(50,   "--max-hosts",    help="Maximum hosts to scan"),
     exploit:     bool          = typer.Option(False,"--exploit",      help="Generate PoC curl commands / exploitation narrative in the report (explicit opt-in, requires client authorization)"),
     credential_spray: bool     = typer.Option(False,"--credential-spray", help="Reuse credentials confirmed via default_creds on one host to try against the other hosts in this scan (explicit opt-in, requires client authorization)"),
+    resume:      bool          = typer.Option(True, "--resume/--no-resume", help="Resume from a checkpoint if this CIDR was interrupted mid-scan"),
 ):
     """Discover and scan every live host in a CIDR range."""
 
@@ -394,6 +395,7 @@ def network(
         host_budget_s    = host_budget_s,
         exploit          = exploit,
         credential_spray = credential_spray,
+        resume           = resume,
     )
 
     # Final summary table
