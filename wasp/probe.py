@@ -446,7 +446,7 @@ _SIGNALS: dict[str, list[str]] = {
     "xss_reflected":   ["<script", "alert(", "onerror="],
     "info_disclosure": ["password", "secret", "api_key", "private"],
     # Windows / SMB
-    "smb_enum":        ["sharename", "workgroup", "domain", "netbios", "os:", "smb2"],
+    "smb_enum":        ["sharename"],
     "smb_vuln":        ["state: vulnerable", "ms17-010", "ms08-067", "eternalblue"],
     "smb_signing":     ["signing enabled but not required", "message_signing: disabled"],
     "null_session":    ["sharename", "ipc$", "netlogon", "sysvol"],
@@ -504,7 +504,7 @@ def _has_signal(vuln_class: str, raw_result: str) -> bool:
 # (e.g. smb-vuln-ms17-010's "State: VULNERABLE" line) rather than something
 # an LLM needs to interpret from prose — a CONFIRMED verdict here must be
 # backed by a real _SIGNALS match or it's a guess, not a finding.
-_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln", "tls_weak", "ad_bloodhound", "ad_pivot"}
+_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln", "tls_weak", "ad_bloodhound", "ad_pivot", "smb_enum", "null_session", "smb_signing"}
 
 _CVSS_RE = re.compile(r"CVSS-SCORE:\s*([\d.]+)")
 _CVE_RE  = re.compile(r"CVE-\d{4}-\d{4,7}")
@@ -546,6 +546,20 @@ def _self_check():
     assert _has_signal("ad_pivot", "SMB  10.0.0.5  445  DC01  [+] corp.local\\admin:pass (Pwn3d!)") is True
     assert _has_signal("ad_pivot", "SMB  10.0.0.5  445  DC01  [-] corp.local\\admin:pass STATUS_LOGON_FAILURE") is False
     assert _title_for("ad_pivot", "/") == "Lateral Movement — Credential Grants Local Admin (Pwn3d!) — /"
+    # Regression: closed-port SMB scan must not confirm smb_enum/null_session
+    # just because "netbios"/"domain" appear in nmap's own port-table noise.
+    assert "smb_enum" in _SCRIPT_VERDICT_CLASSES
+    assert "null_session" in _SCRIPT_VERDICT_CLASSES
+    assert "smb_signing" in _SCRIPT_VERDICT_CLASSES
+    _closed_port_evidence = (
+        "do_connect: Connection to 10.0.0.5 failed (Error NT_STATUS_CONNECTION_REFUSED)\n"
+        "PORT    STATE  SERVICE\n139/tcp closed netbios-ssn\n445/tcp closed microsoft-ds"
+    )
+    assert _has_signal("smb_enum", _closed_port_evidence) is False
+    assert _has_signal("null_session", _closed_port_evidence) is False
+    assert _has_signal("smb_enum", "Sharename       Type      Comment\n\tADMIN$          Disk") is True
+    assert _has_signal("smb_signing", "Message signing enabled and required") is False
+    assert _has_signal("smb_signing", "Message signing enabled but not required") is True
 
 
 if __name__ == "__main__":
