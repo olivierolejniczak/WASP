@@ -361,6 +361,8 @@ The LLM responds with a structured tool call. If it returns text instead of a to
 
 This compensates for the known weakness of 3B models that correctly call the tool but then misread their own output on turn 2.
 
+**Script-verdict downgrade** — For classes backed by a deterministic nmap/tool script rather than free-form prose (`smb_enum`, `smb_vuln`, `smb_signing`, `null_session`, `rdp_vuln`, `tls_weak`, `ad_bloodhound`, `ad_pivot`), a `CONFIRMED` verdict is only kept if the raw output actually contains the matching signal string (e.g. a real `smbclient` share table for `smb_enum`, `State: VULNERABLE` for `smb_vuln`). Otherwise it's downgraded to `NOT_VULNERABLE`. This guards against the LLM confirming a vulnerability from a script run that was silent, empty, or closed (e.g. SMB port closed/refused) — where there is no ambiguous prose to hedge on, so a CONFIRMED without the signal is a hallucination, not a judgment call.
+
 **Budget check** — Before each probe, remaining wall-clock time is checked. If less than 15 seconds remain, all remaining hypotheses are skipped and the report phase runs on whatever was found.
 
 ### Phase 4 — Report (~15s)
