@@ -151,6 +151,7 @@ ACTIVE DIRECTORY:
 - asreproast: use impacket_npusers with dc_ip and domain; hash output confirms vulnerable accounts
 - kerberoast: use impacket_spns with dc_ip and domain; $krb5tgs hash confirms Kerberoastable SPNs
 - ad_null_bind: use nmap_script with scripts=ldap-rootdse on port 389; success without credentials confirms null bind
+- ad_bloodhound: use bloodhound_collect with dc_ip, domain, username, password (needs a valid domain account, e.g. one recovered via kerberoast/asreproast); a completed collection with a saved zip confirms attack-path data was harvested
 LINUX SERVICES:
 - ssh_audit: use nmap_script with scripts=ssh-hostkey,ssh2-enum-algos,sshv1 on port 22
 - ftp_anon: use nmap_script with scripts=ftp-anon on port 21; "Anonymous FTP login allowed" confirms it
@@ -278,6 +279,13 @@ def probe_hypothesis(
     tool_name = resp1.tool_call.name
     tool_args = resp1.tool_call.arguments
 
+    if tool_name == "bloodhound_collect":
+        creds = config.get("credentials", {})
+        if creds.get("username"):
+            tool_args["username"] = creds["username"]
+        if creds.get("password"):
+            tool_args["password"] = creds["password"]
+
     # Execute the tool
     raw_result = run_tool(tool_name, tool_args, config, timeout=int(tool_timeout))
     truncated  = raw_result[:result_limit]
@@ -339,6 +347,7 @@ def probe_hypothesis(
             mitre_tactic    = mitre.tactic,
             mitre_url       = mitre.url,
             cvss            = _extract_cvss(raw_result) if tool_name == "nuclei_quick" else None,
+            cve             = _extract_cve(raw_result),
         )
         board.add_finding(finding)
         return finding
@@ -448,6 +457,7 @@ _SIGNALS: dict[str, list[str]] = {
     "asreproast":      ["$krb5asrep$", "as-rep", "hash"],
     "kerberoast":      ["$krb5tgs$", "spn", "service ticket"],
     "ad_null_bind":    ["namingcontexts", "defaultnamingcontext", "success"],
+    "ad_bloodhound":   ["compressing output", "done in", "found ad domain"],
     # Linux services
     "ssh_audit":       ["ssh-", "ecdsa", "rsa", "ed25519", "ssh_host"],
     "ftp_anon":        ["anonymous ftp login allowed", "230", "ftp-anon"],
@@ -491,9 +501,10 @@ def _has_signal(vuln_class: str, raw_result: str) -> bool:
 # (e.g. smb-vuln-ms17-010's "State: VULNERABLE" line) rather than something
 # an LLM needs to interpret from prose — a CONFIRMED verdict here must be
 # backed by a real _SIGNALS match or it's a guess, not a finding.
-_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln", "tls_weak"}
+_SCRIPT_VERDICT_CLASSES = {"smb_vuln", "rdp_vuln", "tls_weak", "ad_bloodhound"}
 
 _CVSS_RE = re.compile(r"CVSS-SCORE:\s*([\d.]+)")
+_CVE_RE  = re.compile(r"CVE-\d{4}-\d{4,7}")
 
 
 def _extract_cvss(raw_result: str) -> float | None:
@@ -501,6 +512,15 @@ def _extract_cvss(raw_result: str) -> float | None:
     (see tools._render_nuclei_jsonl). None if no template carried one."""
     scores = [float(m) for m in _CVSS_RE.findall(raw_result)]
     return max(scores) if scores else None
+
+
+def _extract_cve(raw_result: str) -> str:
+    """Pull unique CVE IDs out of any tool's rendered output, comma-separated."""
+    seen: list[str] = []
+    for m in _CVE_RE.findall(raw_result):
+        if m not in seen:
+            seen.append(m)
+    return ", ".join(seen)
 
 
 def _self_check():
@@ -511,8 +531,14 @@ def _self_check():
     assert _has_signal("smb_vuln", "State: VULNERABLE") is True
     assert _extract_cvss("[critical] foo | CVE: CVE-2021-1 | CVSS-SCORE: 9.8") == 9.8
     assert _extract_cvss("[high] foo") is None
+    assert _extract_cve("MS17-010 (CVE-2017-0144), also CVE-2017-0144") == "CVE-2017-0144"
+    assert _extract_cve("no CVE here") == ""
     assert _has_signal("tls_weak", "|   TLSv1.0:\n|     least strength: C") is True
     assert _has_signal("tls_weak", "|   TLSv1.3:\n|     least strength: A") is False
+    assert "ad_bloodhound" in _SCRIPT_VERDICT_CLASSES
+    assert _has_signal("ad_bloodhound", "INFO: Compressing output into 20260909_bloodhound.zip") is True
+    assert _has_signal("ad_bloodhound", "ERROR: Could not connect to LDAP") is False
+    assert _title_for("ad_bloodhound", "/") == "Active Directory Attack Path Data Collected (BloodHound) — /"
 
 
 if __name__ == "__main__":
@@ -572,6 +598,7 @@ def _title_for(vuln_class: str, url: str) -> str:
         "asreproast":         "AS-REP Roastable Accounts Found",
         "ad_null_bind":       "LDAP Null Bind Allowed",
         "ad_password_policy": "Weak AD Password Policy",
+        "ad_bloodhound":      "Active Directory Attack Path Data Collected (BloodHound)",
         # Linux / services
         "ssh_audit":          "SSH Configuration and Algorithm Disclosure",
         "ftp_anon":           "Anonymous FTP Access Allowed",

@@ -28,7 +28,9 @@ from wasp.llm import OllamaClient
 from wasp.planner import plan_hypotheses
 from wasp.probe import probe_hypothesis
 from wasp.recon import run_recon_for_type, ReconFacts
-from wasp.report import write_report, render_markdown, enrich_findings
+from wasp.report import write_report, render_markdown, enrich_findings, _RECOMMENDATIONS, _RECOMMENDATION_FALLBACK, _RISK_ORDER, _RISK_KEY
+from wasp.i18n import t
+from wasp.mdhtml import md_to_html
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +246,7 @@ def run_network_scan(
     credential_spray: bool = False,
     max_workers: int = 8,
     resume: bool = True,
+    lang: str = "en",
 ) -> tuple[list[HostResult], str]:
     """
     Full pipeline:
@@ -369,6 +372,7 @@ def run_network_scan(
         time.monotonic() - t_total,
         llm, config, output_dir,
         exploit=exploit,
+        lang=lang,
     )
     progress(f"Report written → {report_path}")
 
@@ -393,6 +397,7 @@ def _render_network_report(
     config: dict,
     output_dir: str,
     exploit: bool = False,
+    lang: str = "en",
 ) -> str:
     model = config.get("orchestrator", {}).get("model", "unknown")
     m, s  = divmod(int(elapsed_s), 60)
@@ -400,20 +405,20 @@ def _render_network_report(
     total = sum(len(r.findings) for r in results)
 
     lines: list[str] = [
-        "# WASP Network Scan Report",
+        f"# {t('network_report_title', lang)}",
         "",
-        f"**Target range:** `{cidr}`  ",
-        f"**Date:** {scan_start.strftime('%Y-%m-%d %H:%M UTC')}  ",
-        f"**Duration:** {dur}  ",
-        f"**Model:** {model}  ",
-        f"**Hosts scanned:** {len(results)}  ",
-        f"**Total findings:** {total}",
+        f"**{t('target_range', lang)}:** `{cidr}`  ",
+        f"**{t('date', lang)}:** {scan_start.strftime('%Y-%m-%d %H:%M UTC')}  ",
+        f"**{t('duration', lang)}:** {dur}  ",
+        f"**{t('model', lang)}:** {model}  ",
+        f"**{t('hosts_scanned', lang)}:** {len(results)}  ",
+        f"**{t('total_findings', lang)}:** {total}",
         "",
     ]
 
-    # Executive summary table
-    lines += ["## Host Summary", ""]
-    lines += ["| Host | Type | Ports | Findings |",
+    # Host summary table
+    lines += [f"## {t('host_summary', lang)}", ""]
+    lines += [f"| {t('col_host', lang)} | {t('col_type', lang)} | {t('col_ports', lang)} | {t('findings', lang)} |",
               "|------|------|-------|----------|"]
     for r in results:
         ports = ", ".join(str(p) for p in r.info.open_ports[:8])
@@ -424,6 +429,14 @@ def _render_network_report(
 
     # All findings consolidated
     all_findings = [f for r in results for f in r.findings]
+    from wasp.blackboard import Severity
+    _BADGE = {
+        Severity.CRITICAL: "🔴 CRITICAL",
+        Severity.HIGH:     "🟠 HIGH",
+        Severity.MEDIUM:   "🟡 MEDIUM",
+        Severity.LOW:      "🟢 LOW",
+        Severity.INFO:     "🔵 INFO",
+    }
     if all_findings:
         if exploit:
             # Only enrich findings — skip if llm is slow (best-effort)
@@ -435,22 +448,14 @@ def _render_network_report(
                     raise TimeoutError("enrichment timed out")
                 _sig.signal(_sig.SIGALRM, _timeout_handler)
                 _sig.alarm(120)   # 2-minute hard limit on enrichment
-                enrich_findings(all_findings, llm, config)
+                enrich_findings(all_findings, llm, config, lang=lang)
                 _sig.alarm(0)
                 llm.max_tokens = original_max
             except Exception:
                 pass  # enrichment is best-effort; raw evidence still in report
 
-        lines += ["## All Findings", ""]
-        from wasp.blackboard import Severity
-        _BADGE = {
-            Severity.CRITICAL: "🔴 CRITICAL",
-            Severity.HIGH:     "🟠 HIGH",
-            Severity.MEDIUM:   "🟡 MEDIUM",
-            Severity.LOW:      "🟢 LOW",
-            Severity.INFO:     "🔵 INFO",
-        }
-        lines += ["| # | Host | Severity | CVSS | Title |",
+        lines += [f"## {t('all_findings', lang)}", ""]
+        lines += [f"| # | {t('col_host', lang)} | {t('col_severity', lang)} | {t('col_cvss', lang)} | {t('col_title', lang)} |",
                   "|---|------|----------|------|-------|"]
         _SEV_ORDER = ["critical","high","medium","low","info"]
         for i, f in enumerate(sorted(all_findings,
@@ -470,7 +475,7 @@ def _render_network_report(
                 badge = _BADGE[f.severity]
                 lines += [
                     f"#### {f.title}",
-                    f"**Severity:** {badge}  **Class:** `{f.vuln_class}`",
+                    f"**{t('col_severity', lang)}:** {badge}  **{t('class_label', lang)}:** `{f.vuln_class}`",
                     "",
                 ]
                 if f.description:
@@ -484,13 +489,12 @@ def _render_network_report(
                 lines.append("---")
                 lines.append("")
     else:
-        lines += ["> No confirmed vulnerabilities found across the network.", ""]
+        lines += [f"> {t('no_findings_network', lang)}", ""]
 
     lines += [
-        "## Disclaimer",
+        f"## {t('disclaimer', lang)}",
         "",
-        "_Generated by WASP. Only use against networks you own or are explicitly "
-        "authorised to test. Findings require manual verification._",
+        f"_{t('disclaimer_network', lang)}_",
     ]
 
     md  = "\n".join(lines)
@@ -498,6 +502,8 @@ def _render_network_report(
     ts   = scan_start.strftime("%Y%m%d-%H%M%S")
     path = os.path.join(output_dir, f"wasp-network-{ts}-{slug}.md")
     Path(path).write_text(md, encoding="utf-8")
+    Path(path[:-3] + ".html").write_text(
+        md_to_html(md, title=t("network_report_title", lang)), encoding="utf-8")
 
     import json as _json
     report_dict = {
@@ -512,7 +518,77 @@ def _render_network_report(
     }
     Path(path[:-3] + ".json").write_text(_json.dumps(report_dict, indent=2), encoding="utf-8")
 
+    exec_path = os.path.join(output_dir, f"wasp-network-{ts}-{slug}-executive.md")
+    exec_md = _render_network_executive(all_findings, cidr, scan_start, elapsed_s, lang=lang)
+    Path(exec_path).write_text(exec_md, encoding="utf-8")
+    Path(exec_path[:-3] + ".html").write_text(
+        md_to_html(exec_md, title=t("exec_title", lang)), encoding="utf-8")
+
     return path
+
+
+def _render_network_executive(
+    all_findings: list[Finding],
+    cidr: str,
+    scan_start: datetime,
+    elapsed_s: float,
+    lang: str = "en",
+) -> str:
+    """Business-oriented summary across all scanned hosts. No technical evidence."""
+    from wasp.blackboard import Severity
+    from wasp.report import _BADGE, _SEV_ORDER
+
+    m, s = divmod(int(elapsed_s), 60)
+    lines: list[str] = [
+        f"# {t('exec_title', lang)}",
+        "",
+        f"**{t('exec_scope', lang)}:** `{cidr}`  ",
+        f"**{t('date', lang)}:** {scan_start.strftime('%Y-%m-%d %H:%M UTC')}  ",
+        f"**{t('duration', lang)}:** {m}m {s}s",
+        "",
+    ]
+
+    if not all_findings:
+        lines += [
+            f"## {t('exec_risk_rating', lang)}", "",
+            f"**{t('risk_none', lang)}**", "",
+            f"_{t('no_findings_note', lang)}_", "",
+            f"## {t('disclaimer', lang)}", "",
+            f"_{t('exec_disclaimer_text', lang)}_",
+        ]
+        return "\n".join(lines)
+
+    top_severity = next(sv for sv in _RISK_ORDER if any(f.severity == sv for f in all_findings))
+    lines += [f"## {t('exec_risk_rating', lang)}", "", f"**{t(_RISK_KEY.get(top_severity, 'risk_low'), lang)}**", ""]
+
+    counts = {sv: sum(1 for f in all_findings if f.severity == sv) for sv in _RISK_ORDER}
+    lines += [f"## {t('exec_severity_breakdown', lang)}", ""]
+    lines += [f"| {t('col_severity', lang)} | {t('findings', lang)} |", "|---|---|"]
+    for sv in _RISK_ORDER:
+        if counts[sv]:
+            lines.append(f"| {_BADGE[sv]} | {counts[sv]} |")
+    lines.append("")
+
+    ordered = sorted(all_findings, key=lambda f: (_SEV_ORDER[f.severity], -(f.cvss or 0)))
+    lines += [f"## {t('exec_top_risks', lang)}", ""]
+    for f in ordered[:5]:
+        host_label = f.target_url.split("//")[-1].split("/")[0] if "//" in f.target_url else f.target_url.split("/")[0]
+        lines.append(f"- **{_BADGE[f.severity]}** — {f.title} (`{host_label}`)")
+    lines.append("")
+
+    lines += [f"## {t('exec_recommendations', lang)}", ""]
+    seen_classes: list[str] = []
+    for f in ordered:
+        if f.vuln_class in seen_classes:
+            continue
+        seen_classes.append(f.vuln_class)
+        rec = _RECOMMENDATIONS.get(f.vuln_class, _RECOMMENDATION_FALLBACK).get(lang, _RECOMMENDATION_FALLBACK["en"])
+        lines.append(f"- **{f.title}:** {rec}")
+    lines.append("")
+
+    lines += [f"## {t('disclaimer', lang)}", "", f"_{t('exec_disclaimer_text', lang)}_"]
+
+    return "\n".join(lines)
 
 
 def _self_check():

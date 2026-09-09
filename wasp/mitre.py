@@ -213,6 +213,13 @@ _MAPPING: dict[str, MitreEntry] = {
         tactic_id    = "TA0007",
         url          = "https://attack.mitre.org/techniques/T1201/",
     ),
+    "ad_bloodhound": MitreEntry(
+        technique_id = "T1482",
+        technique    = "Domain Trust Discovery",
+        tactic       = "Discovery",
+        tactic_id    = "TA0007",
+        url          = "https://attack.mitre.org/techniques/T1482/",
+    ),
 
     # ── Linux / services ────────────────────────────────────────────────────
 

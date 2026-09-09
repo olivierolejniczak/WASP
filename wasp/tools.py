@@ -1091,6 +1091,61 @@ def run_banner_grab(args: dict, config: dict, timeout: int = 10) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 18. bloodhound_collect — AD attack-path data collection (BloodHound ingest)
+# ---------------------------------------------------------------------------
+
+BLOODHOUND_COLLECT_TOOL = Tool(
+    name="bloodhound_collect",
+    description=(
+        "Run the bloodhound-python collector against a domain controller to gather "
+        "AD attack-path data (users, groups, computers, sessions, ACLs, trusts) into "
+        "a zip file ingestible by BloodHound for graph analysis (e.g. shortest path "
+        "to Domain Admins). Requires domain, DC IP, and a valid (even low-privilege) "
+        "domain account — BloodHound.py does not support anonymous/null-bind LDAP, "
+        "only use this if the engagement is grey-box or white-box, or credentials "
+        "were already recovered via kerberoast/asreproast."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "dc_ip":    {"type": "string", "description": "Domain controller IP address"},
+            "domain":   {"type": "string", "description": "AD domain name, e.g. corp.local"},
+            "username": {"type": "string", "description": "Domain username (required, even low-privilege)"},
+            "password": {"type": "string", "description": "Domain password (required)"},
+        },
+        "required": ["dc_ip", "domain", "username", "password"],
+    },
+)
+
+def run_bloodhound_collect(args: dict, config: dict, timeout: int = 120) -> str:
+    dc_ip    = args.get("dc_ip", "")
+    domain   = args.get("domain", "")
+    username = args.get("username", "")
+    password = args.get("password", "")
+    if not dc_ip or not domain or not username or not password:
+        return "ERROR: dc_ip, domain, username, and password are required — BloodHound.py needs a valid domain account, anonymous bind is not supported"
+
+    binary = _find_impacket_script("bloodhound-python")   # generic venv/PATH lookup, not impacket-specific
+    if not binary:
+        return "ERROR: bloodhound-python not found — install with: pip install bloodhound"
+
+    # Written alongside the report (cwd is the scan's output_dir) so the zip
+    # survives after the scan and doesn't need a separate artifact-passing path.
+    op_prefix = f"wasp-bloodhound-{domain.replace('.', '-')}"
+    cmd = [
+        binary,
+        "-u", username, "-p", password,
+        "-d", domain, "-ns", dc_ip,
+        "-c", "All", "--zip", "-op", op_prefix,
+    ]
+    out = _run_subprocess(cmd, timeout)
+    produced = [f for f in _os.listdir(".") if f.startswith(op_prefix) and f.endswith(".zip")]
+    if produced:
+        out += f"\nSaved BloodHound collection: {produced[0]} (import into BloodHound GUI for graph analysis; Neo4j not required by WASP itself)"
+    return _truncate(out)
+
+
+# ---------------------------------------------------------------------------
 # Update registries
 # ---------------------------------------------------------------------------
 
@@ -1104,6 +1159,7 @@ ALL_TOOLS.update({
     "hydra_quick":         (HYDRA_QUICK_TOOL,          run_hydra_quick),
     "snmp_enum":           (SNMP_ENUM_TOOL,            run_snmp_enum),
     "banner_grab":         (BANNER_GRAB_TOOL,          run_banner_grab),
+    "bloodhound_collect":  (BLOODHOUND_COLLECT_TOOL,   run_bloodhound_collect),
 })
 
 CLASS_TOOLS.update({
@@ -1122,6 +1178,7 @@ CLASS_TOOLS.update({
     "asreproast":         ["impacket_npusers"],
     "ad_null_bind":       ["nmap_script"],
     "ad_password_policy": ["nmap_script"],
+    "ad_bloodhound":      ["bloodhound_collect"],
     # Linux services
     "ssh_audit":          ["nmap_script", "banner_grab"],
     "ftp_anon":           ["nmap_script", "banner_grab"],
@@ -1146,6 +1203,7 @@ _EXTRA_BINARY_MAP = {
     "banner_grab":      None,     # pure Python
     "impacket_npusers": None,     # checked via _find_impacket_script
     "impacket_spns":    None,
+    "bloodhound_collect": "bloodhound-python",
 }
 
 
@@ -1172,3 +1230,14 @@ def _find_impacket_script(name: str) -> str | None:
     if _os.path.exists(candidate):
         return candidate
     return None
+
+
+def _self_check():
+    assert "bloodhound_collect" in CLASS_TOOLS.get("ad_bloodhound", [])
+    assert ALL_TOOLS["bloodhound_collect"][0].name == "bloodhound_collect"
+    assert "are required" in run_bloodhound_collect({}, {})
+
+
+if __name__ == "__main__":
+    _self_check()
+    print("ok")

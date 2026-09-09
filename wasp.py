@@ -42,6 +42,7 @@ from wasp.probe import probe_hypothesis
 from wasp.recon import run_recon, run_recon_for_type
 from wasp.report import write_report
 from wasp.tools import available_tools, ALL_TOOLS
+from wasp.authorization import write_authorization_form, _DEFAULT_TECHNIQUES
 
 # ---------------------------------------------------------------------------
 # App + console
@@ -90,7 +91,7 @@ def _default_config() -> dict:
         },
         "lite": {
             "wall_clock_budget_s": 840,   # 14 minutes
-            "max_hypotheses":      6,
+            "max_hypotheses":      7,
             "max_turns_per_hypothesis": 2,
             "tool_timeout_s":      45,
             "recon_timeout_s":     90,
@@ -148,6 +149,9 @@ def scan(
     dry_run:     bool           = typer.Option(False,   "--dry-run",      help="Plan only — do not execute any probes"),
     force_type:  Optional[str]  = typer.Option(None,    "--type",   "-t", help="Force target type: web/windows/activedir/linux/router/database"),
     exploit:     bool           = typer.Option(False,   "--exploit",      help="Generate PoC curl commands / exploitation narrative in the report (explicit opt-in, requires client authorization)"),
+    lang:        str            = typer.Option("en",    "--lang",         help="Report language: en or fr"),
+    domain_user: Optional[str]  = typer.Option(None,    "--domain-user",  help="Domain account for credentialed AD tools (e.g. bloodhound_collect); grey/white-box only"),
+    domain_pass: Optional[str]  = typer.Option(None,    "--domain-pass",  help="Password for --domain-user"),
 ):
     """Run a WASP security scan against TARGET (URL, IP, hostname, or CIDR)."""
 
@@ -163,12 +167,15 @@ def scan(
             output_dir=output_dir,
             verbose=verbose,
             exploit=exploit,
+            lang=lang,
         )
         return
 
     config = load_config(config_file)
     if budget is not None:
         config["lite"]["wall_clock_budget_s"] = budget * 60
+    if domain_user or domain_pass:
+        config["credentials"] = {"username": domain_user or "", "password": domain_pass or ""}
 
     budget_s   = config["lite"]["wall_clock_budget_s"]
     scan_start = datetime.utcnow()
@@ -180,6 +187,16 @@ def scan(
 
     def elapsed() -> float:
         return time.monotonic() - t_start
+
+    # Timestamped activity journal — audit trail deliverable
+    # (cf. "journal d'activité horodaté du testeur").
+    activity: list[str] = []
+    _markup_re = _re.compile(r"\[/?[a-zA-Z ]+\]")
+
+    def log(msg: str) -> None:
+        ts = datetime.utcnow().strftime("%H:%M:%S")
+        activity.append(f"[{ts}] {_markup_re.sub('', msg)}")
+        console.print(msg)
 
     llm   = make_llm(config, model)
     board = Blackboard()
@@ -229,7 +246,7 @@ def scan(
         if not force_type:
             target_type = target_info.target_type
 
-    console.print(f"[green]✓[/green] Recon complete in {facts.elapsed_s:.1f}s  [dim](type: {target_type})[/dim]")
+    log(f"[green]✓[/green] Recon complete in {facts.elapsed_s:.1f}s  [dim](type: {target_type})[/dim]")
     if facts.open_ports:
         svc = [f"{p}({facts.port_services.get(p,'')})" for p in facts.open_ports[:10]]
         console.print(f"  Ports : {', '.join(svc)}")
@@ -242,7 +259,7 @@ def scan(
     console.print()
 
     if _cancelled.is_set():
-        _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit)
+        _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit, lang, activity)
         return
 
     # ── Phase 2: Plan ─────────────────────────────────────────────────────
@@ -250,7 +267,7 @@ def scan(
     with console.status("[cyan]Generating hypotheses …[/cyan]"):
         hypotheses = plan_hypotheses(facts, llm, config, target_type=target_type)
 
-    console.print(f"[green]✓[/green] {len(hypotheses)} hypotheses for [bold]{target_type}[/bold] target")
+    log(f"[green]✓[/green] {len(hypotheses)} hypotheses for [bold]{target_type}[/bold] target")
     for h in hypotheses:
         console.print(f"  [{h.priority}] [bold]{h.vuln_class}[/bold] → {h.endpoint}")
         if verbose:
@@ -262,7 +279,7 @@ def scan(
         raise typer.Exit(0)
 
     if _cancelled.is_set():
-        _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit)
+        _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit, lang, activity)
         return
 
     # ── Phase 3: Probe ────────────────────────────────────────────────────
@@ -285,18 +302,18 @@ def scan(
         if finding:
             color = _SEV_COLOR.get(finding.severity, "white")
             badge = finding.severity.value.upper()
-            console.print(
+            log(
                 f"  [bold green]CONFIRMED[/bold green] [{color}]{badge}[/{color}]  "
                 f"{finding.title}  [dim]({probe_s:.1f}s)[/dim]"
             )
         else:
-            console.print(
+            log(
                 f"  [dim]not vulnerable[/dim]  {h.vuln_class} → {h.endpoint}  "
                 f"[dim]({probe_s:.1f}s)[/dim]"
             )
 
     console.print()
-    _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit)
+    _finish(board, target, scan_start, elapsed(), llm, config, output_dir, exploit, lang, activity)
 
 
 def _finish(
@@ -308,6 +325,8 @@ def _finish(
     config: dict,
     output_dir: str,
     exploit: bool = False,
+    lang: str = "en",
+    activity: list[str] | None = None,
 ) -> None:
     """Write report and print final summary."""
     console.rule("Phase 4 — Report")
@@ -318,10 +337,22 @@ def _finish(
             report_path = write_report(
                 board, target, scan_start, elapsed_s, llm, config, output_dir,
                 exploit=exploit,
+                lang=lang,
             )
         console.print(f"[green]✓[/green] Report written → [bold]{report_path}[/bold]")
     else:
         console.print("[dim]No confirmed findings — no report written.[/dim]")
+
+    if activity:
+        slug = target.replace("://", "-").replace("/", "-").replace(":", "-").strip("-")[:50]
+        log_path = os.path.join(output_dir, f"wasp-{scan_start.strftime('%Y%m%d-%H%M%S')}-{slug}-{lang}-activity.log")
+        header = (
+            f"WASP activity log\nTarget: {target}\n"
+            f"Started: {scan_start.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+            f"Duration: {elapsed_s:.1f}s\n{'-'*40}\n"
+        )
+        Path(log_path).write_text(header + "\n".join(activity) + "\n", encoding="utf-8")
+        console.print(f"[green]✓[/green] Activity log → [bold]{log_path}[/bold]")
 
     console.rule("Results")
     summary = board.summary()
@@ -362,6 +393,7 @@ def network(
     exploit:     bool          = typer.Option(False,"--exploit",      help="Generate PoC curl commands / exploitation narrative in the report (explicit opt-in, requires client authorization)"),
     credential_spray: bool     = typer.Option(False,"--credential-spray", help="Reuse credentials confirmed via default_creds on one host to try against the other hosts in this scan (explicit opt-in, requires client authorization)"),
     resume:      bool          = typer.Option(True, "--resume/--no-resume", help="Resume from a checkpoint if this CIDR was interrupted mid-scan"),
+    lang:        str           = typer.Option("en", "--lang",           help="Report language: en or fr"),
 ):
     """Discover and scan every live host in a CIDR range."""
 
@@ -396,6 +428,7 @@ def network(
         exploit          = exploit,
         credential_spray = credential_spray,
         resume           = resume,
+        lang             = lang,
     )
 
     # Final summary table
@@ -419,6 +452,44 @@ def network(
     if report_path:
         console.print(f"\n  Report → [bold]{report_path}[/bold]")
     console.rule()
+
+
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def authorize(
+    target_scope: str      = typer.Argument(..., help="IP range(s)/domain covered by this engagement, e.g. 192.168.1.0/24"),
+    client_name:  str       = typer.Option(..., "--client",            help="Client legal entity name"),
+    tester_lead:  str       = typer.Option(..., "--tester",             help="Engagement lead (WASP operator) name"),
+    client_contact: str     = typer.Option(..., "--client-contact",     help="Client IT contact name/phone/email"),
+    emergency_contact: str  = typer.Option(..., "--emergency-contact",  help="Emergency escalation contact name/phone/email"),
+    start_date:   str       = typer.Option(..., "--start",              help="Testing window start date, YYYY-MM-DD"),
+    end_date:     str       = typer.Option(..., "--end",                help="Testing window end date, YYYY-MM-DD"),
+    engagement_type: str    = typer.Option("black-box", "--type",       help="black-box, grey-box, or white-box"),
+    exclusions:   str       = typer.Option("", "--exclusions",          help="Systems/segments explicitly out of scope"),
+    output_dir:   str       = typer.Option(".", "--output", "-o",       help="Directory for the authorization form"),
+    lang:         str       = typer.Option("en", "--lang",              help="Form language: en or fr"),
+):
+    """Generate a signed-authorization form — required before any scan (--exploit, network, etc.)."""
+    from datetime import datetime as _dt
+
+    path = write_authorization_form(
+        output_dir         = output_dir,
+        client_name        = client_name,
+        target_scope       = target_scope,
+        engagement_type    = engagement_type,
+        start_date         = _dt.strptime(start_date, "%Y-%m-%d").date(),
+        end_date           = _dt.strptime(end_date, "%Y-%m-%d").date(),
+        tester_lead        = tester_lead,
+        client_contact     = client_contact,
+        emergency_contact  = emergency_contact,
+        exclusions         = exclusions,
+        techniques         = _DEFAULT_TECHNIQUES,
+        lang               = lang,
+    )
+    console.print(f"[green]✓[/green] Authorization form → [bold]{path}[/bold]")
+    console.print("[dim]Print, sign, and file before starting any technical work.[/dim]")
 
 
 @app.command()

@@ -7,7 +7,7 @@ instead of requiring `python -m wasp.<module>` per file.
 
 import unittest
 
-from wasp import blackboard, probe, network_scan
+from wasp import blackboard, probe, network_scan, report, authorization, tools
 
 
 class SelfChecks(unittest.TestCase):
@@ -17,8 +17,17 @@ class SelfChecks(unittest.TestCase):
     def test_probe(self):
         probe._self_check()
 
+    def test_tools(self):
+        tools._self_check()
+
     def test_network_scan(self):
         network_scan._self_check()
+
+    def test_report(self):
+        report._self_check()
+
+    def test_authorization(self):
+        authorization._self_check()
 
 
 if __name__ == "__main__":
